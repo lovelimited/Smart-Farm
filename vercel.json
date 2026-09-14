@@ -1,6 +1,13 @@
 {
-  "cleanUrls": true,
-  "redirects": [
-    { "source": "/", "destination": "/webapp/index.html", "permanent": false }
+  "trailingSlash": true,
+  "rewrites": [
+    { "source": "/", "destination": "/webapp/index.html" },
+    { "source": "/app.js", "destination": "/webapp/app.js" },
+    { "source": "/index.css", "destination": "/webapp/index.css" },
+    { "source": "/manifest.json", "destination": "/webapp/manifest.json" },
+    { "source": "/sw.js", "destination": "/webapp/sw.js" },
+    { "source": "/icons/(.*)", "destination": "/webapp/icons/$1" },
+    { "source": "/webapp", "destination": "/webapp/index.html" },
+    { "source": "/webapp/(.*)", "destination": "/webapp/$1" }
   ]
 }
