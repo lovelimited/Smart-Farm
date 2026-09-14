@@ -22,6 +22,7 @@ void uploadStatus();        // ส่งข้อมูล Sensor/Zone ขึ้
 void checkCommands();       // รับคำสั่งจาก Firebase (Manual, Reset Alarm)
 void checkConfigSync();     // ซิงค์ Config (Schedule, Moisture, etc.)
 void sendAlarmToFirebase(); // ส่ง Alarm notification ขึ้น Firebase
+void uploadHistoryLog();    // ส่ง Telemetry Snapshot ขึ้น /devices/esp32/history
 
 // --- WiFi Status ---
 bool isWiFiConnected();

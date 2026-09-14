@@ -41,6 +41,7 @@ const commandRef = db.ref('devices/esp32/commands');
 const configRef = db.ref('devices/esp32/config');
 const alarmHistoryRef = db.ref('devices/esp32/alarmHistory');
 const wifiConfigRef = db.ref('devices/esp32/wifi_config');
+const historyRef = db.ref('devices/esp32/history');
 
 // ================================================================
 //  APPLICATION STATE
@@ -62,6 +63,8 @@ let state = {
   wizardStep: 1,
   chartMetric: 'env', // 'env' | 'soil' | 'water'
   chartRange: '24h',   // '24h' | '7d'
+  firebaseHistory: [], // Real historical records from Firebase
+  lastHistoryRecordTime: 0
 };
 
 const ZONE_NAMES = [
@@ -253,6 +256,17 @@ alarmHistoryRef.orderByKey().limitToLast(15).on('value', (snapshot) => {
   renderAlarmHistory(snapshot.val());
 });
 
+// 5. Listen for Historical Telemetry Log from Firebase
+historyRef.orderByChild('timestamp').limitToLast(48).on('value', (snapshot) => {
+  const val = snapshot.val();
+  if (val) {
+    state.firebaseHistory = Object.values(val);
+    if (historicalChartInstance && state.currentTab === 'pageDashboard') {
+      initHistoricalChart();
+    }
+  }
+});
+
 // ================================================================
 //  CONNECTION STATE HANDLER
 // ================================================================
@@ -280,6 +294,9 @@ function setConnectionState(connected) {
 // ================================================================
 function renderDashboard(data) {
   if (!data) return;
+
+  // Auto-record telemetry snapshot for historical charts
+  recordTelemetrySnapshot(data);
 
   // Clock
   if (data.time) {
@@ -1202,9 +1219,43 @@ function initHistoricalChart() {
 }
 
 function getChartDataset(metric, range) {
-  const labels24h = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
-  const labels7d = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
-  const labels = range === '24h' ? labels24h : labels7d;
+  // Check if real telemetry records exist in Firebase
+  const hasRealData = state.firebaseHistory && state.firebaseHistory.length >= 2;
+
+  let labels = [];
+  let tempPoints = [];
+  let humidPoints = [];
+  let soil0Points = [];
+  let soil1Points = [];
+  let soil2Points = [];
+  let waterPoints = [];
+  let flowPoints = [];
+
+  if (hasRealData) {
+    // Use actual telemetry data from Firebase
+    const records = state.firebaseHistory.slice(-12);
+    labels = records.map(r => r.time || (r.date ? r.date.slice(5) : ''));
+    tempPoints = records.map(r => r.temperature ?? 28);
+    humidPoints = records.map(r => r.humidity ?? 70);
+    soil0Points = records.map(r => r.soil?.[0] ?? 50);
+    soil1Points = records.map(r => r.soil?.[1] ?? 50);
+    soil2Points = records.map(r => r.soil?.[2] ?? 50);
+    waterPoints = records.map(r => r.waterTotal ?? 0);
+    flowPoints = records.map(r => r.flowRate ?? 0);
+  } else {
+    // Realistic initial baseline points
+    const labels24h = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
+    const labels7d = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
+    labels = range === '24h' ? labels24h : labels7d;
+
+    tempPoints = range === '24h' ? [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5] : [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4];
+    humidPoints = range === '24h' ? [78, 82, 85, 72, 60, 58, 67, 74, 72] : [72, 68, 65, 70, 75, 78, 71];
+    soil0Points = range === '24h' ? [48, 45, 68, 62, 55, 48, 70, 64, 58] : [55, 60, 58, 62, 65, 59, 61];
+    soil1Points = range === '24h' ? [52, 50, 48, 72, 66, 58, 54, 75, 68] : [62, 65, 61, 64, 68, 63, 66];
+    soil2Points = range === '24h' ? [42, 40, 38, 65, 58, 50, 46, 68, 60] : [48, 52, 50, 55, 58, 54, 56];
+    waterPoints = range === '24h' ? [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1] : [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2];
+    flowPoints = range === '24h' ? [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4] : [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8];
+  }
 
   if (metric === 'env') {
     return {
@@ -1215,7 +1266,7 @@ function getChartDataset(metric, range) {
         datasets: [
           {
             label: 'อุณหภูมิ (°C)',
-            data: range === '24h' ? [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5] : [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4],
+            data: tempPoints,
             borderColor: '#f59e0b',
             backgroundColor: 'rgba(245, 158, 11, 0.1)',
             tension: 0.35,
@@ -1225,7 +1276,7 @@ function getChartDataset(metric, range) {
           },
           {
             label: 'ความชื้นอากาศ (%)',
-            data: range === '24h' ? [78, 82, 85, 72, 60, 58, 67, 74, 72] : [72, 68, 65, 70, 75, 78, 71],
+            data: humidPoints,
             borderColor: '#0284c7',
             backgroundColor: 'rgba(2, 132, 199, 0.08)',
             tension: 0.35,
@@ -1245,7 +1296,7 @@ function getChartDataset(metric, range) {
         datasets: [
           {
             label: 'Zone 1 ดิน (%)',
-            data: range === '24h' ? [48, 45, 68, 62, 55, 48, 70, 64, 58] : [55, 60, 58, 62, 65, 59, 61],
+            data: soil0Points,
             borderColor: '#10b981',
             tension: 0.35,
             fill: false,
@@ -1254,7 +1305,7 @@ function getChartDataset(metric, range) {
           },
           {
             label: 'Zone 2 ดิน (%)',
-            data: range === '24h' ? [52, 50, 48, 72, 66, 58, 54, 75, 68] : [62, 65, 61, 64, 68, 63, 66],
+            data: soil1Points,
             borderColor: '#0d9488',
             tension: 0.35,
             fill: false,
@@ -1263,7 +1314,7 @@ function getChartDataset(metric, range) {
           },
           {
             label: 'Zone 3 ดิน (%)',
-            data: range === '24h' ? [42, 40, 38, 65, 58, 50, 46, 68, 60] : [48, 52, 50, 55, 58, 54, 56],
+            data: soil2Points,
             borderColor: '#65a30d',
             tension: 0.35,
             fill: false,
@@ -1284,14 +1335,14 @@ function getChartDataset(metric, range) {
           {
             type: 'bar',
             label: 'ปริมาณน้ำใช้วันนี้ (L)',
-            data: range === '24h' ? [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1] : [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2],
+            data: waterPoints,
             backgroundColor: 'rgba(21, 128, 61, 0.75)',
             borderRadius: 6
           },
           {
             type: 'line',
             label: 'อัตราการไหลเฉลี่ย (L/m)',
-            data: range === '24h' ? [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4] : [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8],
+            data: flowPoints,
             borderColor: '#0284c7',
             tension: 0.3,
             borderWidth: 2,
@@ -1301,6 +1352,27 @@ function getChartDataset(metric, range) {
       }
     };
   }
+}
+
+// Auto-record telemetry snapshot from live status (Every 10 minutes)
+function recordTelemetrySnapshot(data) {
+  if (!data || typeof data.temperature !== 'number') return;
+  const now = Date.now();
+  if (state.lastHistoryRecordTime && (now - state.lastHistoryRecordTime < 10 * 60 * 1000)) return;
+  state.lastHistoryRecordTime = now;
+
+  const item = {
+    timestamp: now,
+    time: data.time || new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }),
+    date: data.date || new Date().toISOString().slice(0, 10),
+    temperature: parseFloat(data.temperature.toFixed(1)),
+    humidity: parseFloat(data.humidity.toFixed(1)),
+    soil: data.soil || [0, 0, 0],
+    waterTotal: data.flow?.total || 0,
+    flowRate: data.flow?.rate || 0
+  };
+
+  historyRef.push(item).catch(() => {});
 }
 
 function changeChartMetric(metric) {

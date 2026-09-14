@@ -25,10 +25,12 @@ RealtimeDatabase Database;
 NoAuth noAuth;
 
 // --- Timing ---
-unsigned long lastUploadTime   = 0;
-unsigned long lastCmdCheckTime = 0;
-unsigned long lastConfigSync   = 0;
-unsigned long lastWiFiCheck    = 0;
+unsigned long lastUploadTime    = 0;
+unsigned long lastCmdCheckTime  = 0;
+unsigned long lastConfigSync    = 0;
+unsigned long lastWiFiCheck     = 0;
+unsigned long lastHistoryUpload = 0;
+#define FIREBASE_HISTORY_INTERVAL 600000UL // บันทึกประวัติลง /devices/esp32/history ทุก 10 นาที
 
 // --- Config version tracking ---
 int lastConfigVersion = -1;
@@ -159,6 +161,12 @@ void syncFirebase() {
   if (now - lastConfigSync >= 5000) {
     lastConfigSync = now;
     checkConfigSync();
+  }
+
+  // Upload telemetry snapshot ลงประวัติกราฟ ทุก 10 นาที
+  if (now - lastHistoryUpload >= FIREBASE_HISTORY_INTERVAL) {
+    lastHistoryUpload = now;
+    uploadHistoryLog();
   }
 }
 
@@ -548,4 +556,39 @@ void sendAlarmToFirebase() {
   // Also push to alarm history
   String histJson = json;
   Database.push<object_t>(asyncClient, "/devices/esp32/alarmHistory", object_t(histJson));
+}
+
+// ================================================================
+//  UPLOAD HISTORY LOG → /devices/esp32/history
+//  ส่งข้อมูลประวัติ Sensor/Water/Flow ย้อนหลังสำหรับแสดงผลกราฟบนเว็บ
+// ================================================================
+void uploadHistoryLog() {
+  if (!firebaseReady) return;
+
+  String json = "{";
+  char timeBuf[12];
+  snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", rtcHour, rtcMinute);
+  json += "\"time\":\"" + String(timeBuf) + "\"";
+
+  char dateBuf[14];
+  snprintf(dateBuf, sizeof(dateBuf), "%04d-%02d-%02d", rtcYear, rtcMonth, rtcDay);
+  json += ",\"date\":\"" + String(dateBuf) + "\"";
+
+  json += ",\"timestamp\":" + String(millis());
+  json += ",\"temperature\":" + String(temperature, 1);
+  json += ",\"humidity\":" + String(humidity, 1);
+
+  json += ",\"soil\":[";
+  for (int i = 0; i < NUM_SOIL_SENSORS; i++) {
+    if (i > 0) json += ",";
+    json += String(soilPercent[i], 1);
+  }
+  json += "]";
+
+  json += ",\"waterTotal\":" + String(totalLiters, 2);
+  json += ",\"flowRate\":" + String(flowRate, 2);
+  json += "}";
+
+  Database.push<object_t>(asyncClient, "/devices/esp32/history", object_t(json));
+  Serial.println(F("[FIREBASE] Telemetry log saved to /devices/esp32/history"));
 }
