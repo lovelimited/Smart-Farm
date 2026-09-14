@@ -65,8 +65,12 @@
   <link rel="stylesheet" href="index.css">
   <link rel="stylesheet" href="/webapp/index.css">
 
+  <!-- Chart.js CDN for Historical Analytics -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
   <!-- Firebase SDK (v10 compat) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 </head>
 <body class="bg-surface-bg text-slate-800 antialiased font-sans min-h-screen flex flex-col pb-24 selection:bg-forest-100 selection:text-forest-900">
@@ -278,12 +282,58 @@
         </div>
       </div>
 
+      <!-- Historical Analytics Charts Card -->
+      <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <i class="ti ti-chart-line text-base"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-sm text-slate-800">สถิติและกราฟย้อนหลัง</h3>
+              <p class="text-[10px] text-slate-400">สภาพแวดล้อม ความชื้นดิน และการใช้น้ำ</p>
+            </div>
+          </div>
+          <!-- Time Range Pills -->
+          <div class="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-semibold" id="chartRangeTabs">
+            <button type="button" id="btnRange24h" onclick="changeChartRange('24h')" class="px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition">24 ชม.</button>
+            <button type="button" id="btnRange7d" onclick="changeChartRange('7d')" class="px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition">7 วัน</button>
+          </div>
+        </div>
+
+        <!-- Metric Selectors Tabs -->
+        <div class="grid grid-cols-3 gap-1.5 p-1 bg-surface-subtle rounded-2xl text-center" id="chartMetricTabs">
+          <button type="button" onclick="changeChartMetric('env')" id="btnMetricEnv" class="chart-tab active py-1.5 px-2 rounded-xl text-xs font-semibold bg-white text-emerald-800 shadow-2xs border border-emerald-100 transition flex items-center justify-center gap-1">
+            <i class="ti ti-temperature text-amber-500"></i> <span>อุณหภูมิ/ชื้น</span>
+          </button>
+          <button type="button" onclick="changeChartMetric('soil')" id="btnMetricSoil" class="chart-tab py-1.5 px-2 rounded-xl text-xs font-medium text-slate-500 hover:text-slate-800 transition flex items-center justify-center gap-1">
+            <i class="ti ti-seeding text-emerald-500"></i> <span>ความชื้นดิน</span>
+          </button>
+          <button type="button" onclick="changeChartMetric('water')" id="btnMetricWater" class="chart-tab py-1.5 px-2 rounded-xl text-xs font-medium text-slate-500 hover:text-slate-800 transition flex items-center justify-center gap-1">
+            <i class="ti ti-droplet text-sky-500"></i> <span>การใช้น้ำ</span>
+          </button>
+        </div>
+
+        <!-- Chart Canvas Container -->
+        <div class="relative w-full h-48 pt-1">
+          <canvas id="historicalChart"></canvas>
+        </div>
+
+        <!-- Dynamic Chart Summary Pill -->
+        <div id="chartSummaryBar" class="bg-forest-50/60 border border-forest-100/80 rounded-xl p-2.5 flex items-center justify-between text-xs text-slate-600">
+          <span class="flex items-center gap-1 text-[11px] text-forest-800 font-medium">
+            <i class="ti ti-info-circle text-emerald-600"></i> <span id="chartSummaryText">อุณหภูมิเฉลี่ย 29.5°C • ความชื้น 68%</span>
+          </span>
+          <span class="text-[10px] text-slate-400 font-mono" id="chartLastUpdated">แบบ Real-time</span>
+        </div>
+      </div>
+
       <!-- Zone Status Cards Overview -->
       <div>
         <div class="flex items-center justify-between mb-2.5 px-1">
           <h3 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
-            <i class="ti ti-valve text-emerald-600"></i>
-            สถานะวาล์ว 4 โซน
+            <i class="ti ti-adjustments text-emerald-600"></i>
+            สถานะและโหมด 4 โซน
           </h3>
           <button onclick="switchTab('pageZones')" class="text-xs font-semibold text-forest-700 hover:text-forest-800 flex items-center gap-0.5">
             ควบคุม <i class="ti ti-chevron-right text-xs"></i>
@@ -380,14 +430,28 @@
         </div>
       </div>
 
-      <!-- Schedule Slots -->
+      <!-- Schedule Slots Header & Dynamic Container -->
       <div class="space-y-3">
-        <h3 class="font-bold text-sm text-slate-800 px-1 flex items-center justify-between">
-          <span>ตารางเวลารดน้ำ (สูงสุด 4 ช่วงเวลา)</span>
-        </h3>
-        <div class="space-y-2.5" id="scheduleSlotsList">
-          <!-- Populated by JS -->
+        <div class="flex items-center justify-between px-1">
+          <div>
+            <h3 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+              <i class="ti ti-alarm text-emerald-600"></i>
+              ช่วงเวลารดน้ำอัตโนมัติ
+            </h3>
+            <span class="text-[11px] text-slate-400">กำหนดเวลาและวันที่ต้องการให้รดน้ำ</span>
+          </div>
+          <span id="schedSlotCountBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold">1 / 4 ช่วง</span>
         </div>
+
+        <div class="space-y-3" id="scheduleSlotsList">
+          <!-- Populated dynamically by JS (only active slots shown) -->
+        </div>
+
+        <!-- Add Slot Button -->
+        <button type="button" id="btnAddScheduleSlot" onclick="addNewScheduleSlot()" class="w-full py-3 px-4 rounded-2xl border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-emerald-50/40 hover:bg-emerald-50 text-forest-700 font-bold text-xs flex items-center justify-center gap-2 transition active:scale-[0.99] shadow-xs">
+          <i class="ti ti-circle-plus text-base text-forest-700"></i>
+          <span>เพิ่มช่วงเวลารดน้ำ (+ เพิ่มช่วงเวลา)</span>
+        </button>
       </div>
 
       <!-- Save Config Button -->
@@ -503,7 +567,7 @@
 
       <!-- Zones -->
       <button onclick="switchTab('pageZones')" class="nav-item flex flex-col items-center gap-1 text-slate-400 hover:text-forest-700 py-1 px-3 rounded-2xl transition" data-target="pageZones">
-        <i class="ti ti-valve text-2xl"></i>
+        <i class="ti ti-adjustments text-2xl"></i>
         <span class="text-[11px] font-semibold">ควบคุม</span>
       </button>
 
@@ -597,51 +661,75 @@
           </button>
         </div>
 
-        <!-- STEP 2: เลือก WiFi บ้าน / ฟาร์ม -->
-        <div id="wizardStep2" class="hidden space-y-4">
-          <div class="flex justify-center my-2">
-            <div class="w-20 h-20 rounded-2xl bg-sky-50 text-sky-700 flex items-center justify-center shadow-xs">
-              <i class="ti ti-wifi text-4xl"></i>
+        <!-- STEP 2: เลือก WiFi บ้าน / ฟาร์ม (พร้อมระบบสแกนอัตโนมัติ) -->
+        <div id="wizardStep2" class="hidden space-y-3.5">
+          <div class="flex justify-center my-1">
+            <div class="w-16 h-16 rounded-2xl bg-sky-50 text-sky-700 flex items-center justify-center shadow-xs">
+              <i class="ti ti-wifi text-3xl"></i>
             </div>
           </div>
 
           <div class="text-center">
-            <h3 class="font-bold text-base text-slate-900">กำหนดค่า WiFi บ้าน / ฟาร์ม</h3>
-            <p class="text-xs text-slate-500 mt-1">ใส่วง WiFi 2.4 GHz เพื่อให้อุปกรณ์ต่อเน็ตได้</p>
+            <h3 class="font-bold text-base text-slate-900">เลือก WiFi ที่ต้องการเชื่อมต่อ</h3>
+            <p class="text-xs text-slate-500 mt-0.5">เลือกจากรายการที่ค้นพบ หรือระบุชื่อเอง</p>
           </div>
 
-          <div class="space-y-3 pt-2">
+          <!-- Auto-Discovered WiFi List -->
+          <div class="space-y-1.5 pt-1">
+            <div class="flex items-center justify-between px-0.5">
+              <span class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <i class="ti ti-access-point text-emerald-600"></i> เครือข่ายที่ค้นพบ (2.4 GHz)
+              </span>
+              <button type="button" onclick="scanWifiNetworks()" id="btnScanWifi" class="text-[11px] text-forest-700 hover:text-forest-800 font-semibold flex items-center gap-1 transition">
+                <i class="ti ti-refresh" id="scanRefreshIcon"></i>
+                <span id="scanRefreshText">ค้นหาใหม่</span>
+              </button>
+            </div>
+
+            <!-- WiFi Network Cards List -->
+            <div class="space-y-1.5 max-h-44 overflow-y-auto pr-0.5" id="wifiScanList">
+              <!-- Populated dynamically by JS -->
+            </div>
+          </div>
+
+          <!-- Manual SSID Input (Collapsible or Direct) -->
+          <div class="space-y-2.5 pt-1 border-t border-slate-100">
             <div>
-              <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อ WiFi (SSID):</label>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs font-semibold text-slate-700 block">WiFi ที่เลือก (SSID):</label>
+                <button type="button" onclick="toggleCustomSsidInput()" class="text-[11px] text-slate-400 hover:text-slate-600 underline">
+                  พิมพ์ชื่อเอง
+                </button>
+              </div>
               <div class="relative">
-                <input type="text" id="wifiSsidInput" placeholder="เช่น Farm_WiFi_2.4G" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium outline-none focus:ring-2 focus:ring-forest-500">
-                <i class="ti ti-antenna absolute right-3 top-3 text-slate-400"></i>
+                <input type="text" id="wifiSsidInput" placeholder="แตะเลือกจากรายการด้านบน หรือพิมพ์ชื่อ" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-800 font-semibold outline-none focus:ring-2 focus:ring-forest-500">
+                <i class="ti ti-antenna absolute right-3 top-2.5 text-slate-400"></i>
               </div>
             </div>
 
             <div>
               <label class="text-xs font-semibold text-slate-700 block mb-1">รหัสผ่าน WiFi:</label>
               <div class="relative">
-                <input type="password" id="wifiPassInput" placeholder="รหัสผ่านอย่างน้อย 8 ตัวอักษร" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium outline-none focus:ring-2 focus:ring-forest-500 pr-9">
-                <button type="button" onclick="togglePassVisibility()" class="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">
+                <input type="password" id="wifiPassInput" placeholder="รหัสผ่าน WiFi 8 ตัวอักษรขึ้นไป" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-800 font-medium outline-none focus:ring-2 focus:ring-forest-500 pr-9">
+                <button type="button" onclick="togglePassVisibility()" class="absolute right-3 top-2 text-slate-400 hover:text-slate-600">
                   <i class="ti ti-eye text-base" id="eyeIcon"></i>
                 </button>
               </div>
             </div>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-2xl p-2.5 text-[11px] text-slate-500 flex items-center gap-2">
-            <i class="ti ti-bulb text-amber-500 text-base flex-shrink-0"></i>
-            <span>ESP32 รองรับความถี่ <b>2.4 GHz</b> เท่านั้น (ไม่รองรับ 5 GHz)</span>
+          <div class="bg-amber-50/70 border border-amber-200/80 rounded-xl p-2 text-[11px] text-amber-800 flex items-center gap-2">
+            <i class="ti ti-info-circle text-amber-600 text-base flex-shrink-0"></i>
+            <span>ESP32 รองรับเฉพาะความถี่ <b>2.4 GHz</b> เท่านั้น</span>
           </div>
 
-          <!-- Buttons -->
-          <div class="flex gap-2 pt-2">
-            <button onclick="goToWizardStep(1)" class="w-1/3 h-11 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-semibold text-xs transition">
+          <!-- Navigation Buttons -->
+          <div class="flex gap-2 pt-1">
+            <button onclick="goToWizardStep(1)" class="w-1/3 h-10 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-semibold text-xs transition">
               ย้อนกลับ
             </button>
-            <button onclick="goToWizardStep(3)" class="flex-1 h-11 bg-forest-700 hover:bg-forest-800 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md shadow-forest-900/10">
-              <span>บันทึก & เชื่อมต่อ</span>
+            <button onclick="goToWizardStep(3)" class="flex-1 h-10 bg-forest-700 hover:bg-forest-800 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md shadow-forest-900/10">
+              <span>ถัดไป</span>
               <i class="ti ti-arrow-right text-sm"></i>
             </button>
           </div>

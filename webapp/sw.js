@@ -2,7 +2,7 @@
 //  🌿 Verdante Smart Farm — Service Worker (PWA Offline Caching)
 // ================================================================
 
-const CACHE_NAME = 'verdante-pwa-v2';
+const CACHE_NAME = 'verdante-pwa-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -11,6 +11,8 @@ const ASSETS_TO_CACHE = [
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/icon-maskable-192.png',
+  './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png'
 ];
 

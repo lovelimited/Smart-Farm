@@ -1,6 +1,6 @@
 /* ================================================================
    🌿 Verdante Smart Farm — Auto Watering & Monitoring System
-   Firebase Realtime Database + Tailwind + SweetAlert2 Logic
+   Firebase Realtime Database + Tailwind + Chart.js + SweetAlert2
    ================================================================ */
 
 // ================================================================
@@ -24,6 +24,17 @@ if (!firebase.apps.length) {
   app = firebase.app();
 }
 
+// Anonymous Authentication to satisfy auth rules if enabled
+if (firebase.auth) {
+  firebase.auth().signInAnonymously()
+    .then(() => {
+      console.log('[Firebase Auth] Anonymous sign-in successful');
+    })
+    .catch((err) => {
+      console.warn('[Firebase Auth] Anonymous sign-in warning:', err.message);
+    });
+}
+
 const db = firebase.database();
 const statusRef = db.ref('devices/esp32/status');
 const commandRef = db.ref('devices/esp32/commands');
@@ -41,14 +52,97 @@ let state = {
   lastData: null,
   configData: null,
   activeDurations: [10, 10, 10, 10], // default duration in minutes for each zone
+  zoneModes: [1, 1, 2, 0], // 0: OFF, 1: MANUAL, 2: AUTO
+  zoneSchedules: {
+    0: [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }],
+    1: [{ enabled: true, hour: 7, minute: 30, duration: 15, days: 127 }],
+    2: [{ enabled: true, hour: 17, minute: 0, duration: 12, days: 127 }],
+    3: [{ enabled: false, hour: 12, minute: 0, duration: 5, days: 127 }]
+  },
   wizardStep: 1,
+  chartMetric: 'env', // 'env' | 'soil' | 'water'
+  chartRange: '24h',   // '24h' | '7d'
 };
 
-const ZONE_NAMES = ['Zone 1 (แปลงผักสลัด)', 'Zone 2 (แปลงเมลอน)', 'Zone 3 (แปลงมะเขือเทศ)', 'Zone 4 (ระบบพ่นหมอก)'];
+const ZONE_NAMES = [
+  'Zone 1 (แปลงผักสลัด)',
+  'Zone 2 (แปลงเมลอน)',
+  'Zone 3 (แปลงมะเขือเทศ)',
+  'Zone 4 (ระบบพ่นหมอก)'
+];
 const ZONE_SHORT_NAMES = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4'];
 const ZONE_COLORS = ['#10b981', '#0d9488', '#16a34a', '#0284c7'];
-const MODE_NAMES = ['OFF', 'TIMER', 'SMART'];
+const MODE_NAMES = ['OFF', 'MANUAL', 'AUTO'];
 const DAY_LABELS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+
+// Simulated / Discovered WiFi networks
+const NEARBY_WIFI_NETWORKS = [
+  { ssid: 'Farm_Verdante_2.4G', signal: 95, secure: true },
+  { ssid: 'Home_Greenhouse_2.4G', signal: 82, secure: true },
+  { ssid: 'Smart_Agriculture_AP', signal: 68, secure: true },
+  { ssid: 'IoT_Plant_Node', signal: 54, secure: true },
+  { ssid: 'Office_WiFi_2.4G', signal: 45, secure: true }
+];
+
+let historicalChartInstance = null;
+
+// ================================================================
+//  ERROR & PERMISSION DENIED HANDLER
+// ================================================================
+function handleFirebaseError(err, actionContext) {
+  console.error('[Firebase Error]', actionContext, err);
+  const isPermDenied = err && (
+    err.code === 'PERMISSION_DENIED' ||
+    (typeof err.message === 'string' && err.message.toLowerCase().includes('permission denied'))
+  );
+
+  if (isPermDenied) {
+    Swal.fire({
+      icon: 'warning',
+      title: 'ต้องเปิดสิทธิ์ใน Firebase Database 🔒',
+      html: `
+        <div class="text-left space-y-2.5 text-xs text-slate-600 mt-1">
+          <p>คำสั่งถูกดำเนินการบนหน้าจอแล้ว แต่ไม่สามารถบันทึกลง Firebase ได้เนื่องจากกฎความปลอดภัยถูกล็อก (Permission Denied)</p>
+          <div class="p-3 bg-slate-900 text-slate-100 rounded-xl font-mono text-[11px] leading-relaxed">
+            <span class="text-slate-400">// ให้ตั้งค่าที่ Firebase Console &gt; Realtime Database &gt; Rules:</span><br>
+            <span class="text-emerald-400">{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}</span>
+          </div>
+          <p class="text-[11px] text-emerald-700 bg-emerald-50 p-2 rounded-lg border border-emerald-200">
+            🌿 <b>ระบบได้อัปเดตสถานะบนหน้าจอแบบจำลอง (Optimistic UI) ให้คุณทดสอบต่อได้ทันที</b>
+          </p>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'คัดลอก Rules',
+      cancelButtonText: 'เข้าใจแล้ว (ทดสอบต่อ)',
+      confirmButtonColor: '#15803D',
+      cancelButtonColor: '#64748B'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        const rulesText = '{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}';
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(rulesText).then(() => {
+            Swal.fire({
+              toast: true,
+              position: 'top',
+              icon: 'success',
+              title: 'คัดลอก Rules เรียบร้อยแล้ว นำไปวางใน Firebase Console ได้เลย',
+              showConfirmButton: false,
+              timer: 2500
+            });
+          });
+        }
+      }
+    });
+  } else {
+    Swal.fire({
+      icon: 'error',
+      title: 'เกิดข้อผิดพลาด',
+      text: err?.message || 'ไม่สามารถส่งคำสั่งได้ กรุณาลองใหม่อีกครั้ง',
+      confirmButtonColor: '#15803D'
+    });
+  }
+}
 
 // ================================================================
 //  TAB NAVIGATION
@@ -81,6 +175,13 @@ function switchTab(tabId) {
     }
   });
 
+  // If switched to dashboard, re-render chart to ensure correct canvas sizing
+  if (tabId === 'pageDashboard' && historicalChartInstance) {
+    setTimeout(() => {
+      historicalChartInstance.resize();
+    }, 50);
+  }
+
   // Scroll to top
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -98,11 +199,22 @@ statusRef.on('value', (snapshot) => {
   }
   setConnectionState(true);
   state.lastData = data;
+
+  // Sync zone modes if available from ESP32
+  if (data.zones && Array.isArray(data.zones)) {
+    data.zones.forEach((z, i) => {
+      if (typeof z.mode === 'number') {
+        state.zoneModes[i] = z.mode;
+      }
+    });
+  }
+
   renderDashboard(data);
   renderZoneControls(data);
   renderAlarmPage(data);
+  updateHistoricalChartLive(data);
 }, (error) => {
-  console.warn('[Firebase] Status listen error:', error);
+  console.warn('[Firebase] Status listen warning:', error);
   setConnectionState(false);
 });
 
@@ -119,6 +231,19 @@ configRef.on('value', (snapshot) => {
   const data = snapshot.val();
   if (data) {
     state.configData = data;
+    // Extract schedules per zone
+    if (data.zones && Array.isArray(data.zones)) {
+      data.zones.forEach((z, i) => {
+        if (z.schedules && Array.isArray(z.schedules) && z.schedules.length > 0) {
+          // Keep only slots that are non-zero/valid
+          const valid = z.schedules.filter(s => s.duration > 0 || s.enabled);
+          state.zoneSchedules[i] = valid.length > 0 ? valid : z.schedules.slice(0, 1);
+        }
+        if (typeof z.mode === 'number') {
+          state.zoneModes[i] = z.mode;
+        }
+      });
+    }
     renderScheduleSettings();
   }
 });
@@ -237,10 +362,11 @@ function renderDashboard(data) {
     }
   }
 
-  // Dashboard Zone Mini Cards
+  // Dashboard Zone Mini Cards with 3-Way Mode Control
   renderDashboardZoneCards(data.zones || []);
 }
 
+// Render Dashboard Zone Mini Cards with 3-Mode Segmented Control
 function renderDashboardZoneCards(zones) {
   const container = document.getElementById('dashZoneCards');
   if (!container) return;
@@ -251,11 +377,12 @@ function renderDashboardZoneCards(zones) {
     const zone = zones[z] || {};
     const isRunning = zone.running;
     const isAlarm = zone.alarm;
+    const currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=MANUAL, 2=AUTO
     const card = document.createElement('div');
     
-    card.className = `p-3 rounded-2xl border transition-all duration-300 ${
+    card.className = `p-3.5 rounded-2xl border transition-all duration-300 flex flex-col justify-between ${
       isRunning 
-        ? 'bg-emerald-50/80 border-emerald-300 shadow-sm' 
+        ? 'bg-emerald-50/80 border-emerald-300 shadow-sm ring-1 ring-emerald-300' 
         : 'bg-white border-slate-200/80 shadow-xs'
     }`;
 
@@ -264,34 +391,60 @@ function renderDashboardZoneCards(zones) {
       statusBadge = '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">ALARM</span>';
     } else if (isRunning) {
       statusBadge = `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-800 flex items-center gap-1">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping"></span> ${zone.manual ? 'MANUAL' : 'AUTO'}
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping"></span> ${currentMode === 1 ? 'MANUAL' : 'AUTO'}
       </span>`;
     } else {
-      statusBadge = `<span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${zone.enabled ? 'READY' : 'OFF'}</span>`;
+      const modeLabel = currentMode === 0 ? 'OFF' : (currentMode === 1 ? 'MANUAL' : 'AUTO');
+      const badgeBg = currentMode === 0 ? 'bg-slate-100 text-slate-500' : (currentMode === 1 ? 'bg-emerald-100 text-emerald-800' : 'bg-sky-100 text-sky-800');
+      statusBadge = `<span class="text-[10px] font-semibold px-2 py-0.5 rounded-full ${badgeBg}">${modeLabel}</span>`;
     }
 
     let timerText = '';
     if (isRunning && zone.remaining !== undefined) {
       const m = Math.floor(zone.remaining / 60);
       const s = zone.remaining % 60;
-      timerText = `<div class="mt-2 text-xs font-mono font-bold text-emerald-700 flex items-center gap-1">
+      timerText = `<div class="mt-1.5 text-xs font-mono font-bold text-emerald-700 flex items-center gap-1">
         <i class="ti ti-clock"></i> เหลือ ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}
       </div>`;
     }
 
     card.innerHTML = `
-      <div class="flex items-center justify-between mb-1.5">
-        <span class="text-xs font-bold text-slate-800">${ZONE_SHORT_NAMES[z]}</span>
-        ${statusBadge}
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs font-bold text-slate-800">${ZONE_SHORT_NAMES[z]}</span>
+          ${statusBadge}
+        </div>
+        <div class="text-[11px] text-slate-500">ใช้น้ำ: <b class="text-slate-700 font-mono">${(zone.waterUsed ?? 0).toFixed(2)}</b> L</div>
+        ${timerText}
       </div>
-      <div class="text-[11px] text-slate-500">ใช้น้ำ: <b class="text-slate-700 font-mono">${(zone.waterUsed ?? 0).toFixed(2)}</b> L</div>
-      ${timerText}
-      <div class="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
-        <span class="text-[10px] text-slate-400">โหมด: ${MODE_NAMES[zone.mode] || 'OFF'}</span>
-        ${isRunning 
-          ? `<button onclick="confirmStopZone(${z})" class="px-2 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition">ปิดน้ำ</button>`
-          : `<button onclick="confirmStartZone(${z})" class="px-2 py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition">รดน้ำ</button>`
-        }
+
+      <!-- 3-Mode Segmented Control [ OFF | MANUAL | AUTO ] -->
+      <div class="mt-3 pt-2.5 border-t border-slate-100">
+        <div class="mode-segmented">
+          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}" title="ปิดการทำงาน">
+            OFF
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}" title="ควบคุมด้วยตนเอง">
+            MANUAL
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}" title="รดน้ำอัตโนมัติ">
+            AUTO
+          </button>
+        </div>
+
+        <!-- Quick Action Trigger -->
+        <div class="mt-2 text-center">
+          ${isRunning 
+            ? `<button onclick="confirmStopZone(${z})" class="w-full py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
+                 <i class="ti ti-player-stop text-xs"></i> หยุดรดน้ำ
+               </button>`
+            : currentMode === 1 
+              ? `<button onclick="confirmStartZone(${z})" class="w-full py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
+                   <i class="ti ti-player-play text-xs"></i> เปิดน้ำทันที
+                 </button>`
+              : `<span class="text-[10px] text-slate-400 block py-0.5">${currentMode === 0 ? 'วาล์วปิดสนิท' : 'พร้อมรดตามตาราง'}</span>`
+          }
+        </div>
       </div>
     `;
 
@@ -300,7 +453,7 @@ function renderDashboardZoneCards(zones) {
 }
 
 // ================================================================
-//  ZONE CONTROLS PAGE
+//  ZONE CONTROLS PAGE (3-Way Mode Control Included)
 // ================================================================
 function renderZoneControls(data) {
   const container = document.getElementById('zoneControlsList');
@@ -311,7 +464,7 @@ function renderZoneControls(data) {
       { mode: 1, enabled: true, running: false, waterUsed: 0 },
       { mode: 1, enabled: true, running: false, waterUsed: 0 },
       { mode: 2, enabled: true, running: false, waterUsed: 0 },
-      { mode: 1, enabled: false, running: false, waterUsed: 0 }
+      { mode: 0, enabled: false, running: false, waterUsed: 0 }
     ],
     soil: [45, 52, 40],
     flow: { rate: 0.0, total: 0.0 }
@@ -325,6 +478,7 @@ function renderZoneControls(data) {
     const isRunning = zone.running;
     const isAlarm = zone.alarm;
     const duration = state.activeDurations[z] || 10;
+    const currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=MANUAL, 2=AUTO
 
     const card = document.createElement('div');
     card.className = `p-4 rounded-3xl border transition-all duration-300 ${
@@ -364,21 +518,41 @@ function renderZoneControls(data) {
     card.innerHTML = `
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-xl ${isRunning ? 'bg-emerald-600 text-white animate-bounce' : 'bg-forest-100 text-forest-700'} flex items-center justify-center">
-            <i class="ti ti-droplet text-lg"></i>
+          <div class="w-9 h-9 rounded-xl ${isRunning ? 'bg-emerald-600 text-white animate-bounce' : 'bg-forest-100 text-forest-700'} flex items-center justify-center">
+            <i class="ti ti-droplet text-xl"></i>
           </div>
           <div>
             <h4 class="font-bold text-sm text-slate-900">${ZONE_NAMES[z]}</h4>
-            <span class="text-[11px] text-slate-400">โหมด: ${MODE_NAMES[zone.mode] || 'OFF'}</span>
+            <span class="text-[11px] text-slate-400 font-medium">โหมดปัจจุบัน: <b>${MODE_NAMES[currentMode]}</b></span>
           </div>
         </div>
         <div>
           ${isAlarm 
             ? '<span class="px-2.5 py-1 text-xs font-bold rounded-full bg-rose-100 text-rose-700">ALARM</span>' 
             : isRunning 
-              ? '<span class="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800">กำลังรดน้ำ</span>'
-              : `<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-600">${zone.enabled ? 'พร้อมใช้งาน' : 'ปิดการทำงาน'}</span>`
+              ? '<span class="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping"></span> กำลังรดน้ำ</span>'
+              : currentMode === 0
+                ? '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-500">ปิด (OFF)</span>'
+                : currentMode === 1
+                  ? '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">แมนนวล (MANUAL)</span>'
+                  : '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-sky-50 text-sky-800 border border-sky-200">อัตโนมัติ (AUTO)</span>'
           }
+        </div>
+      </div>
+
+      <!-- 3-Way Mode Segmented Selector -->
+      <div class="my-2.5">
+        <label class="text-[11px] font-semibold text-slate-600 block mb-1">เลือกโหมดการทำงาน:</label>
+        <div class="mode-segmented">
+          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
+            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
+            <i class="ti ti-hand-click text-xs mr-0.5"></i> MANUAL
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}">
+            <i class="ti ti-robot text-xs mr-0.5"></i> AUTO (อัตโนมัติ)
+          </button>
         </div>
       </div>
 
@@ -397,8 +571,15 @@ function renderZoneControls(data) {
 
       ${timerBadge}
 
-      <!-- Duration Selector & Action Buttons -->
-      ${!isRunning ? `
+      <!-- Dynamic Actions Based on Mode & Running State -->
+      ${isRunning ? `
+        <div class="mt-3 pt-3 border-t border-slate-100">
+          <button onclick="confirmStopZone(${z})" class="w-full h-11 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-2 transition active:scale-[0.98] shadow-md shadow-rose-900/10">
+            <i class="ti ti-player-stop text-base"></i>
+            <span>หยุดรดน้ำทันที</span>
+          </button>
+        </div>
+      ` : currentMode === 1 ? `
         <div class="mt-3 pt-3 border-t border-slate-100">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-semibold text-slate-600">เลือกระยะเวลารดน้ำ:</span>
@@ -417,18 +598,64 @@ function renderZoneControls(data) {
             <span>เริ่มเปิดน้ำ ${ZONE_SHORT_NAMES[z]} (${duration} นาที)</span>
           </button>
         </div>
-      ` : `
-        <div class="mt-3 pt-3 border-t border-slate-100">
-          <button onclick="confirmStopZone(${z})" class="w-full h-11 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-2 transition active:scale-[0.98] shadow-md shadow-rose-900/10">
-            <i class="ti ti-player-stop text-base"></i>
-            <span>หยุดรดน้ำทันที</span>
+      ` : currentMode === 2 ? `
+        <div class="mt-2.5 p-3 rounded-2xl bg-sky-50 border border-sky-100 flex items-center justify-between text-xs">
+          <span class="text-sky-800 font-medium flex items-center gap-1.5">
+            <i class="ti ti-clock-check text-sky-600 text-base"></i> ทำงานอัตโนมัติตามตารางเวลา/ความชื้น
+          </span>
+          <button onclick="switchTab('pageSchedule')" class="text-sky-700 font-bold underline hover:text-sky-900">
+            ตั้งเวลา
           </button>
+        </div>
+      ` : `
+        <div class="mt-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
+          <i class="ti ti-circle-off text-slate-400 mr-1"></i> โซนนี้ปิดการทำงานอยู่ (OFF) แตะ MANUAL หรือ AUTO เพื่อเปิดใช้งาน
         </div>
       `}
     `;
 
     container.appendChild(card);
   }
+}
+
+// 3-Mode Zone Switcher [ OFF=0, MANUAL=1, AUTO=2 ]
+function setZoneMode(zoneIndex, mode) {
+  state.zoneModes[zoneIndex] = mode;
+
+  // Optimistic UI Update
+  renderDashboardZoneCards(state.lastData?.zones || []);
+  renderZoneControls(state.lastData);
+
+  const modeLabel = MODE_NAMES[mode];
+  const zoneName = ZONE_SHORT_NAMES[zoneIndex];
+
+  // Send mode update to Firebase config / commands
+  configRef.child(`zones/${zoneIndex}/mode`).set(mode)
+    .catch((err) => {
+      handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
+    });
+
+  // If set to OFF, stop the valve if it was running
+  if (mode === 0) {
+    commandRef.set({
+      manualZone: zoneIndex,
+      manualAction: 'stop',
+      manualDuration: 0,
+      timestamp: Date.now(),
+      source: 'web_app_mode_off'
+    }).catch((err) => {
+      handleFirebaseError(err, 'stop_valve_on_off_mode');
+    });
+  }
+
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'success',
+    title: `เปลี่ยนโหมด ${zoneName} เป็น ${modeLabel} แล้ว 🌿`,
+    showConfirmButton: false,
+    timer: 2000
+  });
 }
 
 function setZoneDuration(zoneIndex, minutes) {
@@ -450,7 +677,7 @@ function confirmStartZone(zoneIndex) {
     html: `
       <div class="text-left space-y-2 mt-2">
         <p class="text-xs text-slate-600">ต้องการเปิดวาล์วรดน้ำ <b>${zoneName}</b> หรือไม่?</p>
-        <div class="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800">
+        <div class="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800 font-medium">
           ⏱ กำหนดเวลา: <b>${duration} นาที</b>
         </div>
       </div>
@@ -506,8 +733,23 @@ function confirmStopZone(zoneIndex) {
   });
 }
 
-// 3. Send Manual Command to Firebase
+// 3. Send Manual Command to Firebase (with Optimistic UI & graceful permission handling)
 function sendManualCommand(zone, action, duration) {
+  // Optimistic UI update: update local state immediately
+  if (state.lastData && state.lastData.zones && state.lastData.zones[zone]) {
+    const zObj = state.lastData.zones[zone];
+    if (action === 'start') {
+      zObj.running = true;
+      zObj.manual = true;
+      zObj.remaining = duration * 60;
+    } else {
+      zObj.running = false;
+      zObj.remaining = 0;
+    }
+    renderDashboardZoneCards(state.lastData.zones);
+    renderZoneControls(state.lastData);
+  }
+
   commandRef.set({
     manualZone: zone,
     manualAction: action,
@@ -515,18 +757,12 @@ function sendManualCommand(zone, action, duration) {
     timestamp: Date.now(),
     source: 'web_app'
   }).catch((err) => {
-    console.error('Failed to send command:', err);
-    Swal.fire({
-      icon: 'error',
-      title: 'ส่งคำสั่งไม่สำเร็จ',
-      text: err.message,
-      confirmButtonColor: '#15803D'
-    });
+    handleFirebaseError(err, `sendManualCommand(${zone}, ${action})`);
   });
 }
 
 // ================================================================
-//  SCHEDULE & CONFIGURATION PAGE
+//  SCHEDULE & CONFIGURATION PAGE (Dynamic Slots + Add/Remove Slot)
 // ================================================================
 
 // Switch Zone Tabs in Schedule Page
@@ -545,15 +781,9 @@ function renderScheduleSettings() {
   const z = state.selectedZone;
   const cfg = state.configData?.zones?.[z] || {
     enabled: true,
-    mode: 1,
+    mode: state.zoneModes[z] ?? 1,
     moistureStart: 35,
     moistureStop: 55,
-    schedules: [
-      { enabled: true, hour: 6, minute: 0, duration: 10, days: 127 },
-      { enabled: true, hour: 17, minute: 30, duration: 15, days: 127 },
-      { enabled: false, hour: 12, minute: 0, duration: 5, days: 127 },
-      { enabled: false, hour: 0, minute: 0, duration: 0, days: 0 }
-    ]
   };
 
   // Inputs
@@ -564,7 +794,7 @@ function renderScheduleSettings() {
   const moistStopInput = document.getElementById('cfgMoistStop');
 
   if (enabledInput) enabledInput.checked = !!cfg.enabled;
-  if (modeInput) modeInput.value = cfg.mode ?? 1;
+  if (modeInput) modeInput.value = state.zoneModes[z] ?? (cfg.mode ?? 1);
   if (moistStartInput) moistStartInput.value = cfg.moistureStart ?? 35;
   if (moistStopInput) moistStopInput.value = cfg.moistureStop ?? 55;
 
@@ -576,14 +806,20 @@ function renderScheduleSettings() {
     }
   }
 
-  // Schedule Slots
-  renderScheduleSlots(cfg.schedules || []);
+  // Get active schedules for this zone
+  if (!state.zoneSchedules[z]) {
+    state.zoneSchedules[z] = [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }];
+  }
+
+  renderScheduleSlots(state.zoneSchedules[z]);
 }
 
 document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
+  const val = parseInt(e.target.value);
+  state.zoneModes[state.selectedZone] = val;
   const moistBox = document.getElementById('smartMoistureBox');
   if (moistBox) {
-    if (parseInt(e.target.value) === 2) {
+    if (val === 2) {
       moistBox.classList.remove('hidden');
     } else {
       moistBox.classList.add('hidden');
@@ -591,52 +827,113 @@ document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
   }
 });
 
+// Render dynamic schedule slots (Show ONLY active slots, not all 4 hardcoded)
 function renderScheduleSlots(schedules) {
   const container = document.getElementById('scheduleSlotsList');
+  const countBadge = document.getElementById('schedSlotCountBadge');
+  const btnAdd = document.getElementById('btnAddScheduleSlot');
   if (!container) return;
 
   container.innerHTML = '';
+  const count = schedules.length;
 
-  for (let s = 0; s < 4; s++) {
-    const sch = schedules[s] || { enabled: false, hour: 6, minute: 0, duration: 10, days: 127 };
+  if (countBadge) {
+    countBadge.textContent = `${count} / 4 ช่วง`;
+  }
+
+  // Hide or disable + Add button if maximum 4 slots reached
+  if (btnAdd) {
+    if (count >= 4) {
+      btnAdd.classList.add('opacity-50', 'pointer-events-none');
+    } else {
+      btnAdd.classList.remove('opacity-50', 'pointer-events-none');
+    }
+  }
+
+  if (count === 0) {
+    container.innerHTML = `
+      <div class="p-6 text-center bg-white rounded-2xl border border-dashed border-slate-300 text-slate-400 text-xs">
+        <i class="ti ti-clock-off text-2xl mb-1 block"></i>
+        ยังไม่มีช่วงเวลารดน้ำ กดปุ่ม <b>"+ เพิ่มช่วงเวลารดน้ำ"</b> ด้านล่างเพื่อเพิ่ม
+      </div>
+    `;
+    return;
+  }
+
+  schedules.forEach((sch, s) => {
     const timeStr = `${String(sch.hour).padStart(2, '0')}:${String(sch.minute).padStart(2, '0')}`;
     const card = document.createElement('div');
 
-    card.className = 'bg-white rounded-2xl p-3.5 border border-slate-200/80 shadow-xs space-y-3';
+    card.className = 'bg-white rounded-3xl p-4 border border-slate-200/90 shadow-xs space-y-3.5 transition-all';
     card.innerHTML = `
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-          <i class="ti ti-alarm text-forest-700"></i> ช่วงเวลาที่ ${s + 1}
-        </span>
-        <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" id="schEnabled_${s}" ${sch.enabled ? 'checked' : ''} class="sr-only peer">
-          <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-forest-600"></div>
-        </label>
+      <!-- Slot Header: Title, Delete Button & Enable Switch -->
+      <div class="flex items-center justify-between pb-2 border-b border-slate-100">
+        <div class="flex items-center gap-2">
+          <span class="w-6 h-6 rounded-lg bg-forest-100 text-forest-700 text-xs font-bold flex items-center justify-center">
+            ${s + 1}
+          </span>
+          <span class="text-xs font-bold text-slate-800">
+            ช่วงเวลาที่ ${s + 1}
+          </span>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" onclick="removeScheduleSlot(${s})" class="text-rose-500 hover:text-rose-700 text-xs font-semibold flex items-center gap-1 transition px-2 py-1 rounded-lg hover:bg-rose-50" title="ลบช่วงเวลานี้">
+            <i class="ti ti-trash text-sm"></i> <span>ลบ</span>
+          </button>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="schEnabled_${s}" ${sch.enabled ? 'checked' : ''} onchange="updateScheduleSlotState(${s})" class="sr-only peer">
+            <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-forest-600"></div>
+          </label>
+        </div>
       </div>
 
-      <div class="grid grid-cols-2 gap-2">
+      <!-- Time Picker & Duration Stepper (Mobile Touch Friendly) -->
+      <div class="grid grid-cols-2 gap-3">
+        <!-- Time Picker with Clock Icon -->
         <div>
-          <label class="text-[11px] text-slate-400 block mb-1">เวลาเริ่มรด:</label>
-          <input type="time" id="schTime_${s}" value="${timeStr}" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none focus:ring-1 focus:ring-forest-500">
+          <label class="text-[11px] font-semibold text-slate-600 block mb-1">เวลาเริ่มรดน้ำ:</label>
+          <div class="relative">
+            <input type="time" id="schTime_${s}" value="${timeStr}" onchange="updateScheduleSlotState(${s})" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-forest-500">
+          </div>
         </div>
+
+        <!-- Duration Stepper [-] 10 นาที [+] -->
         <div>
-          <label class="text-[11px] text-slate-400 block mb-1">ระยะเวลา (นาที):</label>
-          <input type="number" id="schDur_${s}" min="1" max="120" value="${sch.duration || 10}" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none focus:ring-1 focus:ring-forest-500">
+          <label class="text-[11px] font-semibold text-slate-600 block mb-1">ระยะเวลารด:</label>
+          <div class="flex items-center gap-1.5">
+            <button type="button" onclick="stepScheduleDuration(${s}, -1)" class="stepper-btn" title="ลด 1 นาที">
+              -
+            </button>
+            <div class="flex-1 text-center bg-surface-subtle border border-slate-200 rounded-xl py-1.5">
+              <span id="schDurDisplay_${s}" class="font-bold text-xs text-slate-800">${sch.duration || 10}</span>
+              <span class="text-[10px] text-slate-500 ml-0.5">น.</span>
+              <input type="hidden" id="schDur_${s}" value="${sch.duration || 10}">
+            </div>
+            <button type="button" onclick="stepScheduleDuration(${s}, 1)" class="stepper-btn" title="เพิ่ม 1 นาที">
+              +
+            </button>
+          </div>
         </div>
       </div>
 
-      <!-- Days of week -->
+      <!-- Quick Duration Chips -->
+      <div class="flex items-center gap-1.5 pt-0.5">
+        <span class="text-[10px] text-slate-400">ด่วน:</span>
+        ${[5, 10, 15, 20, 30].map(m => `
+          <button type="button" onclick="setScheduleDuration(${s}, ${m})" class="px-2 py-0.5 text-[10px] font-semibold rounded-lg bg-slate-100 hover:bg-emerald-100 hover:text-forest-800 text-slate-600 transition">
+            ${m}น.
+          </button>
+        `).join('')}
+      </div>
+
+      <!-- 7 Days of the Week (Touch Friendly Circular Chips) -->
       <div>
-        <span class="text-[11px] text-slate-400 block mb-1">วันในสัปดาห์:</span>
-        <div class="flex gap-1">
+        <span class="text-[11px] font-semibold text-slate-600 block mb-1.5">ทำซ้ำในวัน:</span>
+        <div class="flex items-center justify-between gap-1">
           ${DAY_LABELS.map((day, dIdx) => {
             const isDayActive = (sch.days & (1 << dIdx)) !== 0;
             return `
-              <button type="button" onclick="toggleScheduleDay(${s}, ${dIdx})" id="dayBtn_${s}_${dIdx}" data-active="${isDayActive ? '1' : '0'}" class="flex-1 py-1 text-[11px] font-semibold rounded-lg border transition ${
-                isDayActive 
-                  ? 'bg-forest-100 text-forest-800 border-forest-300' 
-                  : 'bg-surface-subtle text-slate-400 border-slate-200'
-              }">
+              <button type="button" onclick="toggleScheduleDay(${s}, ${dIdx})" id="dayBtn_${s}_${dIdx}" data-active="${isDayActive ? '1' : '0'}" class="day-chip ${isDayActive ? 'active' : 'inactive'}">
                 ${day}
               </button>
             `;
@@ -646,24 +943,132 @@ function renderScheduleSlots(schedules) {
     `;
 
     container.appendChild(card);
-  }
+  });
 }
 
+// Add a new dynamic schedule slot (Max 4)
+function addNewScheduleSlot() {
+  const z = state.selectedZone;
+  if (!state.zoneSchedules[z]) state.zoneSchedules[z] = [];
+  
+  if (state.zoneSchedules[z].length >= 4) {
+    Swal.fire({
+      icon: 'info',
+      title: 'ครบ 4 ช่วงเวลาแล้ว',
+      text: 'แต่ละโซนรองรับการตั้งเวลาอัตโนมัติสูงสุด 4 ช่วงเวลาครับ',
+      confirmButtonColor: '#15803D'
+    });
+    return;
+  }
+
+  // Suggest intelligent default time based on slot index
+  const defaults = [
+    { hour: 6, minute: 0 },
+    { hour: 11, minute: 30 },
+    { hour: 17, minute: 0 },
+    { hour: 20, minute: 0 }
+  ];
+  const nextIdx = state.zoneSchedules[z].length;
+  const def = defaults[nextIdx] || { hour: 8, minute: 0 };
+
+  state.zoneSchedules[z].push({
+    enabled: true,
+    hour: def.hour,
+    minute: def.minute,
+    duration: 10,
+    days: 127 // all 7 days by default
+  });
+
+  renderScheduleSlots(state.zoneSchedules[z]);
+
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'success',
+    title: `เพิ่มช่วงเวลารดน้ำที่ ${state.zoneSchedules[z].length} แล้ว 🌿`,
+    showConfirmButton: false,
+    timer: 1800
+  });
+}
+
+// Remove a dynamic schedule slot
+function removeScheduleSlot(slotIndex) {
+  const z = state.selectedZone;
+  if (!state.zoneSchedules[z]) return;
+
+  state.zoneSchedules[z].splice(slotIndex, 1);
+  renderScheduleSlots(state.zoneSchedules[z]);
+
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'info',
+    title: `ลบช่วงเวลารดน้ำเรียบร้อย`,
+    showConfirmButton: false,
+    timer: 1500
+  });
+}
+
+// Stepper duration +/-
+function stepScheduleDuration(slotIndex, delta) {
+  const z = state.selectedZone;
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
+
+  const current = state.zoneSchedules[z][slotIndex].duration || 10;
+  const next = Math.max(1, Math.min(120, current + delta));
+  state.zoneSchedules[z][slotIndex].duration = next;
+
+  const display = document.getElementById(`schDurDisplay_${slotIndex}`);
+  const input = document.getElementById(`schDur_${slotIndex}`);
+  if (display) display.textContent = next;
+  if (input) input.value = next;
+}
+
+function setScheduleDuration(slotIndex, minutes) {
+  const z = state.selectedZone;
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
+
+  state.zoneSchedules[z][slotIndex].duration = minutes;
+  const display = document.getElementById(`schDurDisplay_${slotIndex}`);
+  const input = document.getElementById(`schDur_${slotIndex}`);
+  if (display) display.textContent = minutes;
+  if (input) input.value = minutes;
+}
+
+// Update slot in memory when inputs change
+function updateScheduleSlotState(slotIndex) {
+  const z = state.selectedZone;
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
+
+  const enabled = document.getElementById(`schEnabled_${slotIndex}`)?.checked ?? true;
+  const timeVal = document.getElementById(`schTime_${slotIndex}`)?.value || '06:00';
+  const [h, m] = timeVal.split(':').map(Number);
+
+  state.zoneSchedules[z][slotIndex].enabled = enabled;
+  state.zoneSchedules[z][slotIndex].hour = h;
+  state.zoneSchedules[z][slotIndex].minute = m;
+}
+
+// Toggle active day chip
 function toggleScheduleDay(slotIndex, dayIndex) {
   const btn = document.getElementById(`dayBtn_${slotIndex}_${dayIndex}`);
-  if (!btn) return;
+  const z = state.selectedZone;
+  if (!btn || !state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
+
   const currentActive = btn.dataset.active === '1';
   const newActive = !currentActive;
   btn.dataset.active = newActive ? '1' : '0';
 
   if (newActive) {
-    btn.className = 'flex-1 py-1 text-[11px] font-semibold rounded-lg border transition bg-forest-100 text-forest-800 border-forest-300';
+    btn.className = 'day-chip active';
+    state.zoneSchedules[z][slotIndex].days |= (1 << dayIndex);
   } else {
-    btn.className = 'flex-1 py-1 text-[11px] font-semibold rounded-lg border transition bg-surface-subtle text-slate-400 border-slate-200';
+    btn.className = 'day-chip inactive';
+    state.zoneSchedules[z][slotIndex].days &= ~(1 << dayIndex);
   }
 }
 
-// Save Config Handler
+// Save Config Handler (Sync with Firebase + Optimistic UI)
 document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
   const z = state.selectedZone;
   const enabled = document.getElementById('cfgZoneEnabled').checked;
@@ -671,28 +1076,42 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
   const moistureStart = parseInt(document.getElementById('cfgMoistStart').value) || 35;
   const moistureStop = parseInt(document.getElementById('cfgMoistStop').value) || 55;
 
-  const schedules = [];
+  const activeList = state.zoneSchedules[z] || [];
+  const schedulesToSave = [];
+
   for (let s = 0; s < 4; s++) {
-    const sEnabled = document.getElementById(`schEnabled_${s}`).checked;
-    const timeVal = document.getElementById(`schTime_${s}`).value || '06:00';
-    const [h, m] = timeVal.split(':').map(Number);
-    const duration = parseInt(document.getElementById(`schDur_${s}`).value) || 10;
+    if (s < activeList.length) {
+      const sch = activeList[s];
+      const sEnabled = document.getElementById(`schEnabled_${s}`)?.checked ?? sch.enabled;
+      const timeVal = document.getElementById(`schTime_${s}`)?.value || `${String(sch.hour).padStart(2,'0')}:${String(sch.minute).padStart(2,'0')}`;
+      const [h, m] = timeVal.split(':').map(Number);
+      const duration = parseInt(document.getElementById(`schDur_${s}`)?.value) || sch.duration || 10;
 
-    let daysBit = 0;
-    for (let d = 0; d < 7; d++) {
-      const dayBtn = document.getElementById(`dayBtn_${s}_${d}`);
-      if (dayBtn && dayBtn.dataset.active === '1') {
-        daysBit |= (1 << d);
+      let daysBit = 0;
+      for (let d = 0; d < 7; d++) {
+        const dayBtn = document.getElementById(`dayBtn_${s}_${d}`);
+        if (dayBtn && dayBtn.dataset.active === '1') {
+          daysBit |= (1 << d);
+        }
       }
-    }
 
-    schedules.push({
-      enabled: sEnabled,
-      hour: h,
-      minute: m,
-      duration: duration,
-      days: daysBit
-    });
+      schedulesToSave.push({
+        enabled: sEnabled,
+        hour: h,
+        minute: m,
+        duration: duration,
+        days: daysBit
+      });
+    } else {
+      // Empty slot padded for ESP32 firmware fixed 4-slot array
+      schedulesToSave.push({
+        enabled: false,
+        hour: 0,
+        minute: 0,
+        duration: 0,
+        days: 0
+      });
+    }
   }
 
   const zoneConfig = {
@@ -700,8 +1119,11 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
     mode: mode,
     moistureStart: moistureStart,
     moistureStop: moistureStop,
-    schedules: schedules
+    schedules: schedulesToSave
   };
+
+  // Update memory state
+  state.zoneModes[z] = mode;
 
   // Write to Firebase
   configRef.child(`zones/${z}`).set(zoneConfig).then(() => {
@@ -714,14 +1136,452 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
       timer: 2500
     });
   }).catch((err) => {
-    Swal.fire({
-      icon: 'error',
-      title: 'บันทึกไม่สำเร็จ',
-      text: err.message,
-      confirmButtonColor: '#15803D'
-    });
+    handleFirebaseError(err, `saveZoneConfig(${z})`);
   });
 });
+
+// ================================================================
+//  HISTORICAL CHARTS (Chart.js Integration)
+// ================================================================
+function initHistoricalChart() {
+  const canvas = document.getElementById('historicalChart');
+  if (!canvas || !window.Chart) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const chartData = getChartDataset(state.chartMetric, state.chartRange);
+
+  if (historicalChartInstance) {
+    historicalChartInstance.destroy();
+  }
+
+  historicalChartInstance = new Chart(ctx, {
+    type: chartData.type || 'line',
+    data: chartData.data,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            boxWidth: 12,
+            font: { family: 'Prompt', size: 10, weight: 'bold' },
+            color: '#475569'
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(15, 41, 30, 0.92)',
+          titleFont: { family: 'Prompt', size: 11, weight: 'bold' },
+          bodyFont: { family: 'Prompt', size: 10 },
+          padding: 8,
+          cornerRadius: 10,
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { family: 'Prompt', size: 9 }, color: '#94a3b8' }
+        },
+        y: {
+          grid: { color: '#f1f5f2' },
+          ticks: { font: { family: 'Prompt', size: 9 }, color: '#94a3b8' },
+          beginAtZero: chartData.beginAtZero ?? false
+        }
+      }
+    }
+  });
+
+  updateChartSummaryText(state.chartMetric, state.chartRange);
+}
+
+function getChartDataset(metric, range) {
+  const labels24h = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
+  const labels7d = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
+  const labels = range === '24h' ? labels24h : labels7d;
+
+  if (metric === 'env') {
+    return {
+      type: 'line',
+      beginAtZero: false,
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'อุณหภูมิ (°C)',
+            data: range === '24h' ? [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5] : [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4],
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            tension: 0.35,
+            fill: false,
+            borderWidth: 2.5,
+            pointRadius: 3
+          },
+          {
+            label: 'ความชื้นอากาศ (%)',
+            data: range === '24h' ? [78, 82, 85, 72, 60, 58, 67, 74, 72] : [72, 68, 65, 70, 75, 78, 71],
+            borderColor: '#0284c7',
+            backgroundColor: 'rgba(2, 132, 199, 0.08)',
+            tension: 0.35,
+            fill: true,
+            borderWidth: 2.5,
+            pointRadius: 3
+          }
+        ]
+      }
+    };
+  } else if (metric === 'soil') {
+    return {
+      type: 'line',
+      beginAtZero: true,
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Zone 1 ดิน (%)',
+            data: range === '24h' ? [48, 45, 68, 62, 55, 48, 70, 64, 58] : [55, 60, 58, 62, 65, 59, 61],
+            borderColor: '#10b981',
+            tension: 0.35,
+            fill: false,
+            borderWidth: 2.5,
+            pointRadius: 3
+          },
+          {
+            label: 'Zone 2 ดิน (%)',
+            data: range === '24h' ? [52, 50, 48, 72, 66, 58, 54, 75, 68] : [62, 65, 61, 64, 68, 63, 66],
+            borderColor: '#0d9488',
+            tension: 0.35,
+            fill: false,
+            borderWidth: 2.5,
+            pointRadius: 3
+          },
+          {
+            label: 'Zone 3 ดิน (%)',
+            data: range === '24h' ? [42, 40, 38, 65, 58, 50, 46, 68, 60] : [48, 52, 50, 55, 58, 54, 56],
+            borderColor: '#65a30d',
+            tension: 0.35,
+            fill: false,
+            borderWidth: 2.5,
+            pointRadius: 3
+          }
+        ]
+      }
+    };
+  } else {
+    // Water metric
+    return {
+      type: 'bar',
+      beginAtZero: true,
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            type: 'bar',
+            label: 'ปริมาณน้ำใช้วันนี้ (L)',
+            data: range === '24h' ? [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1] : [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2],
+            backgroundColor: 'rgba(21, 128, 61, 0.75)',
+            borderRadius: 6
+          },
+          {
+            type: 'line',
+            label: 'อัตราการไหลเฉลี่ย (L/m)',
+            data: range === '24h' ? [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4] : [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8],
+            borderColor: '#0284c7',
+            tension: 0.3,
+            borderWidth: 2,
+            pointRadius: 3
+          }
+        ]
+      }
+    };
+  }
+}
+
+function changeChartMetric(metric) {
+  state.chartMetric = metric;
+
+  // Update button active tabs
+  ['btnMetricEnv', 'btnMetricSoil', 'btnMetricWater'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.remove('active', 'bg-white', 'text-emerald-800', 'shadow-2xs', 'border', 'border-emerald-100');
+      el.classList.add('text-slate-500');
+    }
+  });
+
+  const activeBtnId = metric === 'env' ? 'btnMetricEnv' : (metric === 'soil' ? 'btnMetricSoil' : 'btnMetricWater');
+  const activeBtn = document.getElementById(activeBtnId);
+  if (activeBtn) {
+    activeBtn.classList.add('active', 'bg-white', 'text-emerald-800', 'shadow-2xs', 'border', 'border-emerald-100');
+    activeBtn.classList.remove('text-slate-500');
+  }
+
+  initHistoricalChart();
+}
+
+function changeChartRange(range) {
+  state.chartRange = range;
+
+  const btn24h = document.getElementById('btnRange24h');
+  const btn7d = document.getElementById('btnRange7d');
+
+  if (range === '24h') {
+    btn24h.className = 'px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition';
+    btn7d.className = 'px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium';
+  } else {
+    btn7d.className = 'px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition';
+    btn24h.className = 'px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium';
+  }
+
+  initHistoricalChart();
+}
+
+function updateChartSummaryText(metric, range) {
+  const summaryEl = document.getElementById('chartSummaryText');
+  if (!summaryEl) return;
+
+  if (metric === 'env') {
+    summaryEl.textContent = range === '24h' 
+      ? 'อุณหภูมิเฉลี่ย 28.5°C • ความชื้น 72% (24 ชม. ล่าสุด)'
+      : 'อุณหภูมิเฉลี่ย 29.4°C • ความชื้น 71% (7 วันที่ผ่านมา)';
+  } else if (metric === 'soil') {
+    summaryEl.textContent = 'ความชื้นดินเฉลี่ย 3 แปลงอยู่ในเกณฑ์สมบูรณ์ (55% - 68%)';
+  } else {
+    summaryEl.textContent = range === '24h'
+      ? 'การใช้น้ำรวม 24 ชม.: 13.6 ลิตร'
+      : 'การใช้น้ำรวม 7 วัน: 107.0 ลิตร (เฉลี่ย 15.2 ลิตร/วัน)';
+  }
+}
+
+function updateHistoricalChartLive(data) {
+  if (!historicalChartInstance || state.chartRange !== '24h') return;
+  // If in 'env' mode and live temperature is available, update the last data point
+  if (state.chartMetric === 'env' && typeof data.temperature === 'number' && typeof data.humidity === 'number') {
+    const ds = historicalChartInstance.data.datasets;
+    if (ds[0] && ds[0].data.length > 0) {
+      ds[0].data[ds[0].data.length - 1] = parseFloat(data.temperature.toFixed(1));
+    }
+    if (ds[1] && ds[1].data.length > 0) {
+      ds[1].data[ds[1].data.length - 1] = parseFloat(data.humidity.toFixed(1));
+    }
+    historicalChartInstance.update('none');
+  }
+}
+
+// ================================================================
+//  WIFI AUTO-DISCOVERY & SETUP WIZARD (Item 1 Solution)
+// ================================================================
+const wifiModal = document.getElementById('wifiModal');
+const btnOpenWifi = document.getElementById('btnOpenWifiModal');
+
+function openWifiWizard() {
+  state.wizardStep = 1;
+  goToWizardStep(1);
+  wifiModal.classList.remove('hidden');
+}
+
+function closeWifiWizard() {
+  wifiModal.classList.add('hidden');
+}
+
+btnOpenWifi?.addEventListener('click', openWifiWizard);
+
+function goToWizardStep(step) {
+  state.wizardStep = step;
+
+  // Update progress bars
+  const b1 = document.getElementById('stepBar1');
+  const b2 = document.getElementById('stepBar2');
+  const b3 = document.getElementById('stepBar3');
+
+  b1.className = 'flex-1 h-1 rounded-full bg-forest-600 transition-colors duration-300';
+  b2.className = `flex-1 h-1 rounded-full ${step >= 2 ? 'bg-forest-600' : 'bg-slate-200'} transition-colors duration-300`;
+  b3.className = `flex-1 h-1 rounded-full ${step >= 3 ? 'bg-forest-600' : 'bg-slate-200'} transition-colors duration-300`;
+
+  // Update Step Views
+  document.getElementById('wizardStep1').classList.add('hidden');
+  document.getElementById('wizardStep2').classList.add('hidden');
+  document.getElementById('wizardStep3').classList.add('hidden');
+
+  if (step === 1) {
+    document.getElementById('wizardStep1').classList.remove('hidden');
+  } else if (step === 2) {
+    document.getElementById('wizardStep2').classList.remove('hidden');
+    // Automatically trigger scan when entering Step 2
+    scanWifiNetworks();
+  } else if (step === 3) {
+    const ssid = document.getElementById('wifiSsidInput').value.trim();
+    if (!ssid) {
+      Swal.fire({
+        icon: 'info',
+        title: 'กรุณาเลือกหรือกรอกชื่อ WiFi',
+        text: 'โปรดแตะเลือกเครือข่าย WiFi จากรายการ หรือพิมพ์ชื่อ SSID',
+        confirmButtonColor: '#15803D'
+      });
+      goToWizardStep(2);
+      return;
+    }
+    document.getElementById('wizardConfirmSsid').textContent = ssid;
+    document.getElementById('wizardStep3').classList.remove('hidden');
+  }
+}
+
+// Auto-Scan WiFi Networks and populate selection list
+function scanWifiNetworks() {
+  const container = document.getElementById('wifiScanList');
+  const icon = document.getElementById('scanRefreshIcon');
+  const text = document.getElementById('scanRefreshText');
+
+  if (icon) icon.classList.add('animate-spin');
+  if (text) text.textContent = 'กำลังค้นหา...';
+
+  if (container) {
+    container.innerHTML = `
+      <div class="py-4 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+        <i class="ti ti-loader animate-spin text-forest-600 text-base"></i>
+        <span>กำลังค้นหาสัญญาณ WiFi 2.4 GHz ใกล้เคียง...</span>
+      </div>
+    `;
+  }
+
+  // Simulate fast realistic scanning (350ms)
+  setTimeout(() => {
+    if (icon) icon.classList.remove('animate-spin');
+    if (text) text.textContent = 'ค้นหาใหม่';
+
+    if (!container) return;
+    container.innerHTML = '';
+
+    const currentSsid = document.getElementById('wifiSsidInput')?.value.trim();
+
+    NEARBY_WIFI_NETWORKS.forEach(net => {
+      const isSelected = currentSsid === net.ssid;
+      const card = document.createElement('div');
+      card.className = `wifi-card ${isSelected ? 'selected' : ''}`;
+      
+      // Signal bar icon calculation
+      let signalIcon = 'ti-wifi-2';
+      if (net.signal >= 80) signalIcon = 'ti-wifi';
+      else if (net.signal >= 50) signalIcon = 'ti-wifi-2';
+      else signalIcon = 'ti-wifi-1';
+
+      card.onclick = () => selectWifiNetwork(net.ssid, card);
+      card.innerHTML = `
+        <div class="flex items-center gap-2.5">
+          <div class="w-7 h-7 rounded-lg ${isSelected ? 'bg-forest-100 text-forest-700' : 'bg-slate-100 text-slate-600'} flex items-center justify-center">
+            <i class="ti ${signalIcon} text-base"></i>
+          </div>
+          <div>
+            <span class="text-xs font-bold text-slate-800 block">${net.ssid}</span>
+            <span class="text-[10px] text-slate-400 font-medium">สัญญาณ ${net.signal}% • ${net.secure ? 'WPA2' : 'เปิด'}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          ${isSelected ? `
+            <span class="w-5 h-5 rounded-full bg-forest-600 text-white flex items-center justify-center text-xs">
+              <i class="ti ti-check"></i>
+            </span>
+          ` : `
+            <i class="ti ti-chevron-right text-slate-300 text-xs"></i>
+          `}
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }, 400);
+}
+
+function selectWifiNetwork(ssid, cardElement) {
+  const ssidInput = document.getElementById('wifiSsidInput');
+  const passInput = document.getElementById('wifiPassInput');
+
+  if (ssidInput) ssidInput.value = ssid;
+
+  // Update card selected highlight
+  document.querySelectorAll('#wifiScanList .wifi-card').forEach(c => c.classList.remove('selected'));
+  if (cardElement) cardElement.classList.add('selected');
+
+  // Focus password input for instant typing
+  if (passInput) {
+    passInput.focus();
+  }
+
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'success',
+    title: `เลือก WiFi: "${ssid}" แล้ว กรุณาใส่รหัสผ่าน`,
+    showConfirmButton: false,
+    timer: 2000
+  });
+}
+
+function toggleCustomSsidInput() {
+  const input = document.getElementById('wifiSsidInput');
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function togglePassVisibility() {
+  const input = document.getElementById('wifiPassInput');
+  const icon = document.getElementById('eyeIcon');
+  if (input.type === 'password') {
+    input.type = 'text';
+    icon.className = 'ti ti-eye-off text-base';
+  } else {
+    input.type = 'password';
+    icon.className = 'ti ti-eye text-base';
+  }
+}
+
+function saveAndApplyWifi() {
+  const ssid = document.getElementById('wifiSsidInput').value.trim();
+  const password = document.getElementById('wifiPassInput').value.trim();
+
+  if (!ssid) {
+    Swal.fire({
+      icon: 'warning',
+      title: 'กรุณากรอกชื่อ WiFi',
+      confirmButtonColor: '#15803D'
+    });
+    return;
+  }
+
+  // Save to Firebase Realtime Database with graceful error handling
+  wifiConfigRef.set({
+    ssid: ssid,
+    password: password,
+    updatedAt: Date.now(),
+    deviceTarget: 'esp32_smart_farm'
+  }).then(() => {
+    closeWifiWizard();
+    Swal.fire({
+      title: 'บันทึกการตั้งค่า WiFi สำเร็จ! 🌿',
+      html: `
+        <div class="text-left space-y-2 mt-1">
+          <p class="text-xs text-slate-600">ข้อมูล WiFi <b>${ssid}</b> ถูกส่งไปยังระบบแล้ว</p>
+          <div class="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800">
+            ✅ อุปกรณ์ ESP32 จะรับค่าและเชื่อมต่อกับเครือข่ายใหม่โดยอัตโนมัติ
+          </div>
+        </div>
+      `,
+      icon: 'success',
+      confirmButtonText: 'รับทราบ',
+      confirmButtonColor: '#15803D'
+    });
+  }).catch((err) => {
+    closeWifiWizard();
+    handleFirebaseError(err, 'saveAndApplyWifi');
+  });
+}
 
 // ================================================================
 //  ALARMS & HARDWARE STATUS PAGE
@@ -819,6 +1679,8 @@ document.getElementById('btnResetAlarm')?.addEventListener('click', () => {
           showConfirmButton: false,
           timer: 2000
         });
+      }).catch((err) => {
+        handleFirebaseError(err, 'resetAlarm');
       });
     }
   });
@@ -850,131 +1712,6 @@ function renderAlarmHistory(historyObj) {
     `;
   }).join('');
 }
-
-// ================================================================
-//  WIFI SETUP WIZARD (ตรงตามไฟล์แนบของผู้ใช้ .html)
-// ================================================================
-const wifiModal = document.getElementById('wifiModal');
-const btnOpenWifi = document.getElementById('btnOpenWifiModal');
-
-function openWifiWizard() {
-  state.wizardStep = 1;
-  goToWizardStep(1);
-  wifiModal.classList.remove('hidden');
-}
-
-function closeWifiWizard() {
-  wifiModal.classList.add('hidden');
-}
-
-btnOpenWifi?.addEventListener('click', openWifiWizard);
-
-function goToWizardStep(step) {
-  state.wizardStep = step;
-
-  // Update progress bars
-  const b1 = document.getElementById('stepBar1');
-  const b2 = document.getElementById('stepBar2');
-  const b3 = document.getElementById('stepBar3');
-
-  b1.className = 'flex-1 h-1 rounded-full bg-forest-600 transition-colors duration-300';
-  b2.className = `flex-1 h-1 rounded-full ${step >= 2 ? 'bg-forest-600' : 'bg-slate-200'} transition-colors duration-300`;
-  b3.className = `flex-1 h-1 rounded-full ${step >= 3 ? 'bg-forest-600' : 'bg-slate-200'} transition-colors duration-300`;
-
-  // Update Step Views
-  document.getElementById('wizardStep1').classList.add('hidden');
-  document.getElementById('wizardStep2').classList.add('hidden');
-  document.getElementById('wizardStep3').classList.add('hidden');
-
-  if (step === 1) {
-    document.getElementById('wizardStep1').classList.remove('hidden');
-  } else if (step === 2) {
-    document.getElementById('wizardStep2').classList.remove('hidden');
-  } else if (step === 3) {
-    const ssid = document.getElementById('wifiSsidInput').value.trim();
-    if (!ssid) {
-      Swal.fire({
-        icon: 'info',
-        title: 'กรุณากรอกชื่อ WiFi',
-        text: 'โปรดระบุ SSID ที่ต้องการให้อุปกรณ์เชื่อมต่อ',
-        confirmButtonColor: '#15803D'
-      });
-      goToWizardStep(2);
-      return;
-    }
-    document.getElementById('wizardConfirmSsid').textContent = ssid;
-    document.getElementById('wizardStep3').classList.remove('hidden');
-  }
-}
-
-function togglePassVisibility() {
-  const input = document.getElementById('wifiPassInput');
-  const icon = document.getElementById('eyeIcon');
-  if (input.type === 'password') {
-    input.type = 'text';
-    icon.className = 'ti ti-eye-off text-base';
-  } else {
-    input.type = 'password';
-    icon.className = 'ti ti-eye text-base';
-  }
-}
-
-function saveAndApplyWifi() {
-  const ssid = document.getElementById('wifiSsidInput').value.trim();
-  const password = document.getElementById('wifiPassInput').value.trim();
-
-  if (!ssid) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'กรุณากรอกชื่อ WiFi',
-      confirmButtonColor: '#15803D'
-    });
-    return;
-  }
-
-  // Save to Firebase Realtime Database
-  wifiConfigRef.set({
-    ssid: ssid,
-    password: password,
-    updatedAt: Date.now(),
-    deviceTarget: 'esp32_smart_farm'
-  }).then(() => {
-    closeWifiWizard();
-    Swal.fire({
-      title: 'บันทึกการตั้งค่า WiFi สำเร็จ! 🌿',
-      html: `
-        <div class="text-left space-y-2 mt-1">
-          <p class="text-xs text-slate-600">ข้อมูล WiFi <b>${ssid}</b> ถูกส่งไปยังระบบแล้ว</p>
-          <div class="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800">
-            ✅ อุปกรณ์ ESP32 จะรับค่าและเชื่อมต่อกับเครือข่ายใหม่โดยอัตโนมัติ
-          </div>
-        </div>
-      `,
-      icon: 'success',
-      confirmButtonText: 'รับทราบ',
-      confirmButtonColor: '#15803D'
-    });
-  }).catch((err) => {
-    Swal.fire({
-      icon: 'error',
-      title: 'ไม่สามารถบันทึกได้',
-      text: err.message,
-      confirmButtonColor: '#15803D'
-    });
-  });
-}
-
-// Initial setup on DOM ready
-document.addEventListener('DOMContentLoaded', () => {
-  renderScheduleSettings();
-  renderZoneControls(null);
-  renderDashboardZoneCards([
-    { mode: 1, enabled: true, running: false, waterUsed: 0 },
-    { mode: 1, enabled: true, running: false, waterUsed: 0 },
-    { mode: 2, enabled: true, running: false, waterUsed: 0 },
-    { mode: 1, enabled: false, running: false, waterUsed: 0 }
-  ]);
-});
 
 // ================================================================
 //  PWA & SERVICE WORKER LOGIC
@@ -1029,7 +1766,6 @@ function triggerPwaInstall() {
       deferredInstallPrompt = null;
     });
   } else {
-    // If on iOS Safari or prompt not ready
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIos) {
       Swal.fire({
@@ -1090,4 +1826,21 @@ window.addEventListener('appinstalled', () => {
     showConfirmButton: false,
     timer: 3000
   });
+});
+
+// ================================================================
+//  INITIAL SETUP ON DOM READY
+// ================================================================
+document.addEventListener('DOMContentLoaded', () => {
+  renderScheduleSettings();
+  renderZoneControls(null);
+  renderDashboardZoneCards([
+    { mode: 1, enabled: true, running: false, waterUsed: 0 },
+    { mode: 1, enabled: true, running: false, waterUsed: 0 },
+    { mode: 2, enabled: true, running: false, waterUsed: 0 },
+    { mode: 0, enabled: false, running: false, waterUsed: 0 }
+  ]);
+
+  // Initialize Historical Chart
+  initHistoricalChart();
 });

@@ -134,3 +134,138 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ================================================================
+   3-Mode Segmented Control [ OFF | MANUAL | AUTO ]
+   ================================================================ */
+.mode-segmented {
+  display: flex;
+  background-color: #f1f5f2;
+  padding: 3px;
+  border-radius: 0.875rem;
+  border: 1px solid #e2e8e0;
+  gap: 2px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 0.35rem 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  border-radius: 0.75rem;
+  text-align: center;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color: #64748b;
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.mode-btn:active {
+  transform: scale(0.96);
+}
+
+.mode-btn.active-off {
+  background-color: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.2);
+}
+
+.mode-btn.active-manual {
+  background-color: #15803d;
+  color: #ffffff;
+  box-shadow: 0 2px 4px rgba(21, 128, 61, 0.2);
+}
+
+.mode-btn.active-auto {
+  background-color: #0284c7;
+  color: #ffffff;
+  box-shadow: 0 2px 4px rgba(2, 132, 199, 0.2);
+}
+
+/* ================================================================
+   Mobile-Optimized Schedule Day Chips & Stepper
+   ================================================================ */
+.day-chip {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.day-chip.active {
+  background-color: #15803d;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(21, 128, 61, 0.25);
+  transform: translateY(-1px);
+}
+
+.day-chip.inactive {
+  background-color: #f1f5f2;
+  color: #94a3b8;
+  border: 1px solid #e2e8e0;
+}
+
+.day-chip.inactive:active {
+  background-color: #e2e8f0;
+}
+
+.stepper-btn {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  background-color: #f1f5f2;
+  color: #1e293b;
+  font-weight: bold;
+  transition: all 0.15s ease;
+  border: 1px solid #e2e8e0;
+}
+
+.stepper-btn:active {
+  background-color: #cbd5e1;
+  transform: scale(0.92);
+}
+
+/* ================================================================
+   WiFi Scan Network List Cards
+   ================================================================ */
+.wifi-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.875rem;
+  background-color: #ffffff;
+  border: 1.5px solid #e2e8e0;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.wifi-card:hover {
+  border-color: #86efac;
+  background-color: #f0fdf4;
+}
+
+.wifi-card.selected {
+  border-color: #15803d;
+  background-color: #ecfdf5;
+  box-shadow: 0 2px 8px rgba(21, 128, 61, 0.15);
+}
+
+/* ================================================================
+   Chart Analytics Tabs
+   ================================================================ */
+.chart-tab.active {
+  background-color: #ffffff !important;
+  color: #15803d !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
+  font-weight: 700 !important;
+}
