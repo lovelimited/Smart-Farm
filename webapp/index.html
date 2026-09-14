@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Verdante Smart Farm — ระบบควบคุมและดูแลฟาร์มอัจฉริยะ ESP32-S3 รดน้ำอัตโนมัติ ตรวจวัดความชื้น และแจ้งเตือนผ่านมือถือ">
+  <meta name="theme-color" content="#15803D">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>🌿 Verdante Smart Farm — ระบบฟาร์มอัจฉริยะ</title>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Tabler Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Prompt"', '"Plus Jakarta Sans"', 'sans-serif'],
+          },
+          colors: {
+            forest: {
+              50: '#f0fdf4',
+              100: '#dcfce7',
+              200: '#bbf7d0',
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+              800: '#166534',
+              900: '#14532d',
+              950: '#052e16',
+            },
+            surface: {
+              bg: '#F8FAF8',
+              card: '#FFFFFF',
+              subtle: '#F1F5F2',
+              border: '#E2E8E0',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- SweetAlert2 CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="index.css">
+
+  <!-- Firebase SDK (v10 compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+</head>
+<body class="bg-surface-bg text-slate-800 antialiased font-sans min-h-screen flex flex-col pb-24 selection:bg-forest-100 selection:text-forest-900">
+
+  <!-- ====== TOP STATUS & BRAND HEADER ====== -->
+  <header class="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-emerald-900/10 px-4 py-3 shadow-xs">
+    <div class="max-w-md mx-auto flex items-center justify-between">
+      <!-- Brand -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-10 h-10 rounded-2xl bg-forest-100 text-forest-700 flex items-center justify-center shadow-xs">
+          <i class="ti ti-leaf text-2xl" aria-hidden="true"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <h1 class="font-bold text-base tracking-tight text-slate-900 leading-tight">Verdante</h1>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">Smart Farm</span>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+            <span class="inline-flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-slate-300 transition-colors duration-300" id="connDot"></span>
+              <span id="connText" class="font-medium">กำลังเชื่อมต่อ...</span>
+            </span>
+            <span class="text-slate-300">•</span>
+            <span id="clockDisplay" class="font-mono text-[11px] text-slate-500">--:--:--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="flex items-center gap-1.5">
+        <button id="btnOpenWifiModal" class="h-9 px-3 rounded-xl bg-forest-50 hover:bg-forest-100 text-forest-700 border border-forest-200/70 text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 shadow-xs" title="ตั้งค่า WiFi อุปกรณ์">
+          <i class="ti ti-wifi text-base" aria-hidden="true"></i>
+          <span class="hidden xs:inline">ตั้งค่า WiFi</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ====== DISCONNECTED / PROVISIONING BANNER ====== -->
+  <div id="offlineBanner" class="hidden bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-800 transition-all">
+    <div class="max-w-md mx-auto flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <i class="ti ti-alert-triangle text-base text-amber-600 flex-shrink-0" aria-hidden="true"></i>
+        <span>ยังไม่เชื่อมต่ออุปกรณ์ ESP32 กรุณาตั้งค่า WiFi</span>
+      </div>
+      <button onclick="openWifiWizard()" class="font-semibold text-amber-900 underline whitespace-nowrap">ตั้งค่าทันที</button>
+    </div>
+  </div>
+
+  <!-- ====== MAIN CONTENT AREA ====== -->
+  <main class="max-w-md mx-auto w-full px-4 pt-4 flex-1">
+
+    <!-- ============================================================== -->
+    <!-- PAGE 1: DASHBOARD                                              -->
+    <!-- ============================================================== -->
+    <section class="page-view active space-y-4" id="pageDashboard">
+      
+      <!-- Greeting & Summary Card -->
+      <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-forest-700 via-forest-800 to-forest-900 text-white p-5 shadow-lg shadow-forest-900/10">
+        <div class="absolute -right-6 -bottom-6 opacity-10 pointer-events-none text-white">
+          <i class="ti ti-plant text-9xl"></i>
+        </div>
+        <div class="relative z-10">
+          <div class="flex items-center justify-between text-xs text-forest-200 mb-1">
+            <span class="flex items-center gap-1"><i class="ti ti-shield-check"></i> ระบบรดน้ำอัจฉริยะ</span>
+            <span class="bg-forest-600/60 px-2 py-0.5 rounded-full text-[11px]" id="fwBadge">FW v1.0</span>
+          </div>
+          <h2 class="text-xl font-bold tracking-tight text-white">ภาพรวมระบบฟาร์ม</h2>
+          <p class="text-xs text-forest-100/90 mt-1 max-w-[260px]">ตรวจวัดความชื้น ควบคุม 4 โซน และติดตามปริมาณน้ำแบบ Real-time</p>
+          
+          <div class="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-forest-600/40 text-center">
+            <div class="bg-white/10 backdrop-blur-xs rounded-2xl p-2.5">
+              <span class="text-[11px] text-forest-200 block">อัตราการไหล</span>
+              <span class="text-lg font-bold text-white font-mono"><span id="dashFlowRate">0.00</span> <span class="text-xs font-normal">L/m</span></span>
+            </div>
+            <div class="bg-white/10 backdrop-blur-xs rounded-2xl p-2.5">
+              <span class="text-[11px] text-forest-200 block">ปริมาณน้ำรวม</span>
+              <span class="text-lg font-bold text-white font-mono"><span id="dashFlowTotal">0.00</span> <span class="text-xs font-normal">L</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Environment Sensors (Temp & Humidity) -->
+      <div class="grid grid-cols-2 gap-3">
+        <!-- Temp -->
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-slate-500">อุณหภูมิอากาศ</span>
+            <div class="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+              <i class="ti ti-temperature text-lg"></i>
+            </div>
+          </div>
+          <div class="mt-3">
+            <div class="text-2xl font-bold text-slate-800 font-mono">
+              <span id="valTemp">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">°C</small>
+            </div>
+            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
+              <div id="barTemp" class="bg-amber-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Humidity -->
+        <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-slate-500">ความชื้นอากาศ</span>
+            <div class="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
+              <i class="ti ti-droplet-half-2 text-lg"></i>
+            </div>
+          </div>
+          <div class="mt-3">
+            <div class="text-2xl font-bold text-slate-800 font-mono">
+              <span id="valHumid">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">%</small>
+            </div>
+            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
+              <div id="barHumid" class="bg-sky-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Soil Moisture Section -->
+      <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
+              <i class="ti ti-seeding text-base"></i>
+            </div>
+            <h3 class="font-bold text-sm text-slate-800">ความชื้นในดิน (Soil Moisture)</h3>
+          </div>
+          <span class="text-[11px] text-slate-400 font-medium">3 จุดวัด</span>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2 text-center pt-1">
+          <!-- Soil Zone 1 -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-emerald-900/5 flex flex-col items-center">
+            <span class="text-[11px] font-semibold text-emerald-800 mb-1">Zone 1</span>
+            <div class="relative w-16 h-16 my-1">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                <circle class="text-slate-200 stroke-current" stroke-width="8" fill="transparent" r="42" cx="50" cy="50"/>
+                <circle id="soilGauge0" class="text-emerald-500 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
+              </svg>
+              <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
+                <span id="valSoil0">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-slate-500 mt-1" id="soilStatus0">ปกติ</span>
+          </div>
+
+          <!-- Soil Zone 2 -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-emerald-900/5 flex flex-col items-center">
+            <span class="text-[11px] font-semibold text-emerald-800 mb-1">Zone 2</span>
+            <div class="relative w-16 h-16 my-1">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                <circle class="text-slate-200 stroke-current" stroke-width="8" fill="transparent" r="42" cx="50" cy="50"/>
+                <circle id="soilGauge1" class="text-teal-500 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
+              </svg>
+              <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
+                <span id="valSoil1">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-slate-500 mt-1" id="soilStatus1">ปกติ</span>
+          </div>
+
+          <!-- Soil Zone 3 -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-emerald-900/5 flex flex-col items-center">
+            <span class="text-[11px] font-semibold text-emerald-800 mb-1">Zone 3</span>
+            <div class="relative w-16 h-16 my-1">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                <circle class="text-slate-200 stroke-current" stroke-width="8" fill="transparent" r="42" cx="50" cy="50"/>
+                <circle id="soilGauge2" class="text-lime-600 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
+              </svg>
+              <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
+                <span id="valSoil2">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-slate-500 mt-1" id="soilStatus2">ปกติ</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zone Status Cards Overview -->
+      <div>
+        <div class="flex items-center justify-between mb-2.5 px-1">
+          <h3 class="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+            <i class="ti ti-valve text-emerald-600"></i>
+            สถานะวาล์ว 4 โซน
+          </h3>
+          <button onclick="switchTab('pageZones')" class="text-xs font-semibold text-forest-700 hover:text-forest-800 flex items-center gap-0.5">
+            ควบคุม <i class="ti ti-chevron-right text-xs"></i>
+          </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3" id="dashZoneCards">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ============================================================== -->
+    <!-- PAGE 2: ZONE CONTROL (ควบคุมวาล์ว)                              -->
+    <!-- ============================================================== -->
+    <section class="page-view hidden space-y-4" id="pageZones">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <i class="ti ti-adjustments text-emerald-600"></i> ควบคุมวาล์วรดน้ำ
+          </h2>
+          <p class="text-xs text-slate-500">สั่งเปิด-ปิดน้ำ และเลือกระยะเวลารดน้ำแต่ละโซน</p>
+        </div>
+      </div>
+
+      <!-- Zone Control Cards List -->
+      <div class="space-y-3.5" id="zoneControlsList">
+        <!-- Generated dynamically by JS with beautiful light nature theme -->
+      </div>
+    </section>
+
+    <!-- ============================================================== -->
+    <!-- PAGE 3: SCHEDULES & SETTINGS (ตั้งเวลา & โหมด)                   -->
+    <!-- ============================================================== -->
+    <section class="page-view hidden space-y-4" id="pageSchedule">
+      <div>
+        <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+          <i class="ti ti-calendar-time text-emerald-600"></i> ตั้งเวลา & โหมดรดน้ำ
+        </h2>
+        <p class="text-xs text-slate-500">กำหนดโหมดการทำงานและตารางเวลารดน้ำอัตโนมัติ</p>
+      </div>
+
+      <!-- Zone Selection Pills -->
+      <div class="flex bg-slate-200/80 p-1 rounded-2xl gap-1" id="schedZoneSelector">
+        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 bg-white text-forest-800 shadow-xs active-pill" data-zone="0">Zone 1</button>
+        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="1">Zone 2</button>
+        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="2">Zone 3</button>
+        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="3">Zone 4</button>
+      </div>
+
+      <!-- Zone Basic Config Card -->
+      <div class="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+        <!-- Enable Zone -->
+        <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div>
+            <span class="font-semibold text-sm text-slate-800 block">เปิดใช้งาน Zone นี้</span>
+            <span class="text-xs text-slate-400">อนุญาตให้รดน้ำตามตารางเวลาหรือ Smart Mode</span>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="cfgZoneEnabled" class="sr-only peer">
+            <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-forest-600"></div>
+          </label>
+        </div>
+
+        <!-- Mode Select -->
+        <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div>
+            <span class="font-semibold text-sm text-slate-800 block">โหมดการทำงาน</span>
+            <span class="text-xs text-slate-400">เลือกเงื่อนไขในการเริ่มรดน้ำ</span>
+          </div>
+          <select id="cfgZoneMode" class="bg-surface-subtle border border-slate-200 text-slate-800 text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-forest-500">
+            <option value="0">OFF (ปิด)</option>
+            <option value="1">TIMER (ตามเวลา)</option>
+            <option value="2">SMART (ความชื้นดิน)</option>
+          </select>
+        </div>
+
+        <!-- Smart Mode Moisture Thresholds -->
+        <div id="smartMoistureBox" class="bg-forest-50/70 rounded-2xl p-3.5 border border-forest-100 space-y-3">
+          <div class="flex items-center gap-1.5 text-xs font-semibold text-forest-800">
+            <i class="ti ti-sparkles"></i> ค่าเกณฑ์ความชื้นดิน (เฉพาะ Smart Mode)
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-[11px] font-medium text-slate-600 block mb-1">เริ่มรดเมื่อต่ำกว่า (%):</label>
+              <input type="number" id="cfgMoistStart" min="0" max="100" value="35" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-semibold text-slate-800 outline-none focus:border-forest-500">
+            </div>
+            <div>
+              <label class="text-[11px] font-medium text-slate-600 block mb-1">หยุดรดเมื่อถึง (%):</label>
+              <input type="number" id="cfgMoistStop" min="0" max="100" value="55" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-semibold text-slate-800 outline-none focus:border-forest-500">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Schedule Slots -->
+      <div class="space-y-3">
+        <h3 class="font-bold text-sm text-slate-800 px-1 flex items-center justify-between">
+          <span>ตารางเวลารดน้ำ (สูงสุด 4 ช่วงเวลา)</span>
+        </h3>
+        <div class="space-y-2.5" id="scheduleSlotsList">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Save Config Button -->
+      <button id="btnSaveConfig" class="w-full py-3.5 px-4 rounded-2xl bg-forest-700 hover:bg-forest-800 text-white font-semibold text-sm shadow-md shadow-forest-900/10 flex items-center justify-center gap-2 transition active:scale-[0.98]">
+        <i class="ti ti-device-floppy text-lg"></i>
+        บันทึกการตั้งค่าลง ESP32
+      </button>
+    </section>
+
+    <!-- ============================================================== -->
+    <!-- PAGE 4: ALARMS & HARDWARE (แจ้งเตือน & อุปกรณ์)                  -->
+    <!-- ============================================================== -->
+    <section class="page-view hidden space-y-4" id="pageAlarm">
+      <div>
+        <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+          <i class="ti ti-bell-ringing text-emerald-600"></i> สถานะระบบ & แจ้งเตือน
+        </h2>
+        <p class="text-xs text-slate-500">ตรวจเช็คสุขภาพอุปกรณ์และประวัติการแจ้งเตือน</p>
+      </div>
+
+      <!-- Overall System Health -->
+      <div id="alarmBannerCard" class="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 flex items-start gap-3.5 transition-all">
+        <div id="alarmBannerIconBox" class="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0 text-2xl">
+          <i class="ti ti-circle-check" id="alarmBannerIcon"></i>
+        </div>
+        <div class="flex-1">
+          <h3 class="font-bold text-base text-slate-800" id="alarmBannerTitle">ระบบทำงานปกติ</h3>
+          <p class="text-xs text-slate-600 mt-0.5 leading-relaxed" id="alarmBannerDesc">ไม่พบข้อผิดพลาดหรือสัญญาณเตือนจากเซนเซอร์</p>
+          <button id="btnResetAlarm" class="hidden mt-3 px-3 py-1.5 bg-rose-600 text-white text-xs font-semibold rounded-xl hover:bg-rose-700 transition active:scale-95 flex items-center gap-1.5 shadow-xs">
+            <i class="ti ti-refresh"></i> รีเซ็ตสัญญาณเตือน (Reset Alarm)
+          </button>
+        </div>
+      </div>
+
+      <!-- Hardware Diagnostics Grid -->
+      <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs">
+        <h3 class="font-bold text-xs text-slate-500 uppercase tracking-wider mb-3">สถานะโมดูลฮาร์ดแวร์</h3>
+        <div class="grid grid-cols-3 gap-2.5 text-center" id="hwModuleGrid">
+          <!-- LCD -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">📺</span>
+            <span class="text-xs font-semibold text-slate-700">LCD 2004</span>
+            <span id="hwLcdStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+          </div>
+          <!-- RTC -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">⏰</span>
+            <span class="text-xs font-semibold text-slate-700">RTC DS3231</span>
+            <span id="hwRtcStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+          </div>
+          <!-- SHT30 -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">🌡️</span>
+            <span class="text-xs font-semibold text-slate-700">SHT30</span>
+            <span id="hwSht30Status" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+          </div>
+          <!-- SD Card -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">💾</span>
+            <span class="text-xs font-semibold text-slate-700">Micro SD</span>
+            <span id="hwSdStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+          </div>
+          <!-- WiFi -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">📶</span>
+            <span class="text-xs font-semibold text-slate-700">WiFi</span>
+            <span id="hwWifiStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+          </div>
+          <!-- Firebase -->
+          <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">
+            <span class="text-xl mb-1">🔥</span>
+            <span class="text-xs font-semibold text-slate-700">Firebase</span>
+            <span id="hwFirebaseStatus" class="text-[11px] font-medium text-emerald-600 mt-0.5 font-medium">เชื่อมต่อแล้ว</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Diagnostic Metrics -->
+      <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs space-y-2.5 text-xs">
+        <div class="flex items-center justify-between text-slate-600 py-1 border-b border-slate-100">
+          <span>หน่วยความจำว่าง (Free Heap)</span>
+          <span id="sysHeap" class="font-mono font-semibold text-slate-800">-- KB</span>
+        </div>
+        <div class="flex items-center justify-between text-slate-600 py-1 border-b border-slate-100">
+          <span>ระยะเวลาทำงาน (Uptime)</span>
+          <span id="sysUptime" class="font-mono font-semibold text-slate-800">--</span>
+        </div>
+        <div class="flex items-center justify-between text-slate-600 py-1">
+          <span>เวอร์ชันเฟิร์มแวร์</span>
+          <span id="sysFw" class="font-mono font-semibold text-slate-800">--</span>
+        </div>
+      </div>
+
+      <!-- Alarm History -->
+      <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs">
+        <h3 class="font-bold text-sm text-slate-800 mb-2">ประวัติการแจ้งเตือน</h3>
+        <div id="alarmHistoryList" class="space-y-2">
+          <div class="text-center py-6 text-slate-400 text-xs">ยังไม่มีประวัติการแจ้งเตือน</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ====== BOTTOM NAVIGATION BAR ====== -->
+  <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 px-4 py-2 shadow-lg">
+    <div class="max-w-md mx-auto flex items-center justify-around">
+      <!-- Dashboard -->
+      <button onclick="switchTab('pageDashboard')" class="nav-item active flex flex-col items-center gap-1 text-slate-400 hover:text-forest-700 py-1 px-3 rounded-2xl transition" data-target="pageDashboard">
+        <i class="ti ti-smart-home text-2xl"></i>
+        <span class="text-[11px] font-semibold">ภาพรวม</span>
+      </button>
+
+      <!-- Zones -->
+      <button onclick="switchTab('pageZones')" class="nav-item flex flex-col items-center gap-1 text-slate-400 hover:text-forest-700 py-1 px-3 rounded-2xl transition" data-target="pageZones">
+        <i class="ti ti-valve text-2xl"></i>
+        <span class="text-[11px] font-semibold">ควบคุม</span>
+      </button>
+
+      <!-- Schedule -->
+      <button onclick="switchTab('pageSchedule')" class="nav-item flex flex-col items-center gap-1 text-slate-400 hover:text-forest-700 py-1 px-3 rounded-2xl transition" data-target="pageSchedule">
+        <i class="ti ti-clock-cog text-2xl"></i>
+        <span class="text-[11px] font-semibold">ตั้งเวลา</span>
+      </button>
+
+      <!-- Alarms -->
+      <button onclick="switchTab('pageAlarm')" class="nav-item flex flex-col items-center gap-1 text-slate-400 hover:text-forest-700 py-1 px-3 rounded-2xl transition relative" data-target="pageAlarm">
+        <i class="ti ti-bell text-2xl"></i>
+        <span class="text-[11px] font-semibold">แจ้งเตือน</span>
+        <span id="navAlarmBadge" class="hidden absolute top-1 right-2.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ============================================================== -->
+  <!-- MODAL: WIFI SETUP WIZARD (ออกแบบตามไฟล์แนบ .html)                -->
+  <!-- ============================================================== -->
+  <div id="wifiModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-3xl max-w-sm w-full overflow-hidden shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+      
+      <!-- Modal Header with Steps Bar (ตรงตามดีไซน์ที่ผู้ใช้แนบ) -->
+      <div class="bg-surface-subtle p-4 border-b border-slate-100">
+        <div class="flex items-center justify-between mb-3">
+          <p class="font-bold text-base text-slate-800" id="wizardHeaderTitle">เชื่อมต่ออุปกรณ์</p>
+          <button onclick="closeWifiWizard()" class="w-8 h-8 rounded-full bg-slate-200/70 hover:bg-slate-300 text-slate-500 flex items-center justify-center transition">
+            <i class="ti ti-x text-lg"></i>
+          </button>
+        </div>
+        
+        <!-- 3-Step Progress Indicators -->
+        <div class="flex gap-1.5">
+          <div id="stepBar1" class="flex-1 h-1 rounded-full bg-forest-600 transition-colors duration-300"></div>
+          <div id="stepBar2" class="flex-1 h-1 rounded-full bg-slate-200 transition-colors duration-300"></div>
+          <div id="stepBar3" class="flex-1 h-1 rounded-full bg-slate-200 transition-colors duration-300"></div>
+        </div>
+      </div>
+
+      <!-- Modal Body Content -->
+      <div class="p-5">
+
+        <!-- STEP 1: เตรียมอุปกรณ์ให้พร้อม (ตรงตามที่แนบ .html) -->
+        <div id="wizardStep1" class="space-y-4">
+          <div class="flex justify-center my-2">
+            <div class="w-20 h-20 rounded-2xl bg-emerald-50 text-forest-700 flex items-center justify-center shadow-xs">
+              <i class="ti ti-router text-4xl"></i>
+            </div>
+          </div>
+
+          <div class="text-center">
+            <h3 class="font-bold text-base text-slate-900">เตรียมอุปกรณ์ให้พร้อม</h3>
+            <p class="text-xs text-slate-500 mt-1">ทำตาม 2 ขั้นตอนนี้ก่อนกดต่อไป</p>
+          </div>
+
+          <div class="space-y-3 pt-2">
+            <div class="flex gap-3 items-start">
+              <div class="w-7 h-7 rounded-full bg-emerald-100 text-forest-800 text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
+              <div>
+                <p class="text-xs font-semibold text-slate-800">กดปุ่มบนตัวอุปกรณ์ค้างไว้ 3 วินาที</p>
+                <p class="text-[11px] text-slate-400 mt-0.5">ไฟ LED จะกะพริบเร็วเมื่อเข้าสู่โหมดตั้งค่า</p>
+              </div>
+            </div>
+
+            <div class="flex gap-3 items-start">
+              <div class="w-7 h-7 rounded-full bg-emerald-100 text-forest-800 text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
+              <div>
+                <p class="text-xs font-semibold text-slate-800">ไปที่ตั้งค่า WiFi ของมือถือ</p>
+                <p class="text-[11px] text-slate-400 mt-0.5">เชื่อมต่อกับเครือข่ายชื่อ:</p>
+                <p class="text-xs font-semibold mt-1 bg-surface-subtle text-forest-900 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200">
+                  <i class="ti ti-wifi text-forest-700"></i> PlantWater-Setup
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Warning Callout Box -->
+          <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3 flex gap-2.5 items-start mt-3">
+            <i class="ti ti-info-circle text-amber-600 text-base flex-shrink-0 mt-0.5"></i>
+            <p class="text-[11px] text-amber-800 leading-relaxed">
+              เครือข่ายนี้ไม่มีอินเทอร์เน็ต มือถืออาจแจ้งเตือน "ไม่มีการเชื่อมต่อ" ให้เลือก <b>เชื่อมต่อต่อไป</b> ได้เลย
+            </p>
+          </div>
+
+          <!-- Next Button -->
+          <button onclick="goToWizardStep(2)" class="w-full h-11 bg-forest-700 hover:bg-forest-800 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md shadow-forest-900/10 mt-4">
+            <span>เชื่อมต่อแล้ว ไปต่อ</span>
+            <i class="ti ti-arrow-right text-sm"></i>
+          </button>
+        </div>
+
+        <!-- STEP 2: เลือก WiFi บ้าน / ฟาร์ม -->
+        <div id="wizardStep2" class="hidden space-y-4">
+          <div class="flex justify-center my-2">
+            <div class="w-20 h-20 rounded-2xl bg-sky-50 text-sky-700 flex items-center justify-center shadow-xs">
+              <i class="ti ti-wifi text-4xl"></i>
+            </div>
+          </div>
+
+          <div class="text-center">
+            <h3 class="font-bold text-base text-slate-900">กำหนดค่า WiFi บ้าน / ฟาร์ม</h3>
+            <p class="text-xs text-slate-500 mt-1">ใส่วง WiFi 2.4 GHz เพื่อให้อุปกรณ์ต่อเน็ตได้</p>
+          </div>
+
+          <div class="space-y-3 pt-2">
+            <div>
+              <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อ WiFi (SSID):</label>
+              <div class="relative">
+                <input type="text" id="wifiSsidInput" placeholder="เช่น Farm_WiFi_2.4G" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium outline-none focus:ring-2 focus:ring-forest-500">
+                <i class="ti ti-antenna absolute right-3 top-3 text-slate-400"></i>
+              </div>
+            </div>
+
+            <div>
+              <label class="text-xs font-semibold text-slate-700 block mb-1">รหัสผ่าน WiFi:</label>
+              <div class="relative">
+                <input type="password" id="wifiPassInput" placeholder="รหัสผ่านอย่างน้อย 8 ตัวอักษร" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium outline-none focus:ring-2 focus:ring-forest-500 pr-9">
+                <button type="button" onclick="togglePassVisibility()" class="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">
+                  <i class="ti ti-eye text-base" id="eyeIcon"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-2xl p-2.5 text-[11px] text-slate-500 flex items-center gap-2">
+            <i class="ti ti-bulb text-amber-500 text-base flex-shrink-0"></i>
+            <span>ESP32 รองรับความถี่ <b>2.4 GHz</b> เท่านั้น (ไม่รองรับ 5 GHz)</span>
+          </div>
+
+          <!-- Buttons -->
+          <div class="flex gap-2 pt-2">
+            <button onclick="goToWizardStep(1)" class="w-1/3 h-11 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-semibold text-xs transition">
+              ย้อนกลับ
+            </button>
+            <button onclick="goToWizardStep(3)" class="flex-1 h-11 bg-forest-700 hover:bg-forest-800 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md shadow-forest-900/10">
+              <span>บันทึก & เชื่อมต่อ</span>
+              <i class="ti ti-arrow-right text-sm"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- STEP 3: บันทึกและทดสอบเชื่อมต่อ -->
+        <div id="wizardStep3" class="hidden space-y-4">
+          <div class="flex justify-center my-2">
+            <div class="w-20 h-20 rounded-2xl bg-emerald-50 text-forest-700 flex items-center justify-center shadow-xs">
+              <i class="ti ti-cloud-upload text-4xl"></i>
+            </div>
+          </div>
+
+          <div class="text-center">
+            <h3 class="font-bold text-base text-slate-900">ส่งข้อมูลไปยังอุปกรณ์</h3>
+            <p class="text-xs text-slate-500 mt-1">ระบบจะบันทึกค่าและเริ่มเชื่อมต่อ Real-time</p>
+          </div>
+
+          <div class="bg-surface-subtle border border-slate-200 rounded-2xl p-3.5 space-y-2 text-xs">
+            <div class="flex justify-between">
+              <span class="text-slate-500">SSID ที่เลือก:</span>
+              <span class="font-semibold text-slate-800" id="wizardConfirmSsid">--</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Firebase:</span>
+              <span class="font-semibold text-forest-700">smart-farm-esp32-5e482</span>
+            </div>
+            <div class="flex justify-between items-center pt-1 border-t border-slate-200/60">
+              <span class="text-slate-500">สถานะ:</span>
+              <span class="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span> พร้อมส่งข้อมูล
+              </span>
+            </div>
+          </div>
+
+          <!-- Buttons -->
+          <div class="flex gap-2 pt-2">
+            <button onclick="goToWizardStep(2)" class="w-1/3 h-11 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-semibold text-xs transition">
+              แก้ไข
+            </button>
+            <button onclick="saveAndApplyWifi()" class="flex-1 h-11 bg-forest-700 hover:bg-forest-800 text-white rounded-2xl font-semibold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md shadow-forest-900/10">
+              <i class="ti ti-check text-sm"></i>
+              <span>ยืนยันบันทึกค่า WiFi</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

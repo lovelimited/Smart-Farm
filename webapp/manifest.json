@@ -1,0 +1,17 @@
+{
+  "name": "Verdante Smart Farm",
+  "short_name": "Verdante",
+  "description": "ระบบควบคุมและดูแลฟาร์มอัจฉริยะ ESP32-S3 — ควบคุมวาล์วรดน้ำ, ตั้งเวลา, ตรวจวัดความชื้นและสภาพแวดล้อม",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F8FAF8",
+  "theme_color": "#15803D",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🌿</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# IDE & Editor files
+.vscode/
+.clangd
+*.swp
+*.swo
+
+# Build & temporary files
+build/
+*.bin
+*.elf
+*.hex
+*.tmp
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
