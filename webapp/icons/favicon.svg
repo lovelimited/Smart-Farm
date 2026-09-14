@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#16a34a"/>
+      <stop offset="45%" stop-color="#15803d"/>
+      <stop offset="100%" stop-color="#0a2e1a"/>
+    </linearGradient>
+
+    <!-- Glass Specular Highlight -->
+    <linearGradient id="specularGrad" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.4"/>
+      <stop offset="35%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Leaf Left Gradient -->
+    <linearGradient id="leafGradLeft" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#86efac"/>
+    </linearGradient>
+
+    <!-- Leaf Right Gradient -->
+    <linearGradient id="leafGradRight" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#6ee7b7"/>
+    </linearGradient>
+
+    <!-- Water Droplet Gradient -->
+    <linearGradient id="dropGrad" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9"/>
+      <stop offset="50%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </linearGradient>
+
+    <!-- Droplet Glow Filter -->
+    <filter id="dropShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0284c7" flood-opacity="0.45"/>
+    </filter>
+
+    <!-- Ambient Shadow for Plant Elements -->
+    <filter id="plantShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#042311" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Base Rounded Squircle Background -->
+  <rect width="512" height="512" rx="128" fill="url(#bgGrad)"/>
+
+  <!-- Subtle Glass Inner Border -->
+  <rect x="8" y="8" width="496" height="496" rx="122" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="6"/>
+
+  <!-- Glass Top Highlight Sheen -->
+  <path d="M 8 135 C 8 65, 65 8, 135 8 L 377 8 C 447 8, 504 65, 504 135 C 504 210, 360 265, 8 230 Z" fill="url(#specularGrad)"/>
+
+  <!-- Base Soil Ground Shadow -->
+  <ellipse cx="256" cy="405" rx="72" ry="14" fill="#042311" fill-opacity="0.55"/>
+
+  <!-- Plant & Water Element Group -->
+  <g filter="url(#plantShadow)">
+    <!-- Elegant Curved Sprout Stem -->
+    <path d="M 256 395 C 256 340, 252 270, 246 215" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
+
+    <!-- Left Primary Foliage Leaf -->
+    <path d="M 248 325 C 190 325, 125 270, 125 195 C 125 140, 180 130, 228 142 C 256 150, 258 220, 248 325 Z" fill="url(#leafGradLeft)"/>
+    <!-- Leaf Vein Left -->
+    <path d="M 248 325 C 215 280, 175 235, 150 180" fill="none" stroke="#ffffff" stroke-width="4.5" stroke-opacity="0.45" stroke-linecap="round"/>
+
+    <!-- Right Fresh Bud Leaf -->
+    <path d="M 252 265 C 295 265, 375 230, 385 155 C 385 102, 332 98, 292 120 C 265 135, 252 195, 252 265 Z" fill="url(#leafGradRight)"/>
+    <!-- Leaf Vein Right -->
+    <path d="M 252 265 C 285 225, 322 182, 350 138" fill="none" stroke="#ffffff" stroke-width="4.5" stroke-opacity="0.45" stroke-linecap="round"/>
+
+    <!-- Central Luminous Water Droplet (Smart Irrigation Core) -->
+    <g filter="url(#dropShadow)">
+      <path d="M 256 155 C 256 155, 202 230, 202 272 C 202 302, 226 326, 256 326 C 286 326, 310 302, 310 272 C 310 230, 256 155, 256 155 Z" fill="url(#dropGrad)"/>
+      <!-- Droplet High Gloss Specular -->
+      <ellipse cx="236" cy="256" rx="11" ry="18" transform="rotate(-30 236 256)" fill="#ffffff" fill-opacity="0.85"/>
+      <circle cx="272" cy="294" r="5.5" fill="#ffffff" fill-opacity="0.45"/>
+    </g>
+  </g>
+</svg>
