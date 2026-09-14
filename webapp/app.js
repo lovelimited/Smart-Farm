@@ -975,3 +975,119 @@ document.addEventListener('DOMContentLoaded', () => {
     { mode: 1, enabled: false, running: false, waterUsed: 0 }
   ]);
 });
+
+// ================================================================
+//  PWA & SERVICE WORKER LOGIC
+// ================================================================
+let deferredInstallPrompt = null;
+
+// Register Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js', { scope: './' })
+      .then((reg) => {
+        console.log('[PWA] Service Worker registered with scope:', reg.scope);
+      })
+      .catch((err) => {
+        console.warn('[PWA] Service Worker registration failed:', err);
+      });
+  });
+}
+
+// Check if running in Standalone PWA mode
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+                     window.navigator.standalone === true;
+
+// Listen for PWA Install Prompt
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+
+  // Show install button in header
+  const btnInstall = document.getElementById('btnInstallPwa');
+  if (btnInstall && !isStandalone) {
+    btnInstall.classList.remove('hidden');
+  }
+
+  // Show banner if not dismissed before
+  const banner = document.getElementById('pwaInstallBanner');
+  const dismissed = localStorage.getItem('verdante_pwa_banner_dismissed');
+  if (banner && !dismissed && !isStandalone) {
+    banner.classList.remove('hidden');
+  }
+});
+
+// Handle Install Click
+function triggerPwaInstall() {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    deferredInstallPrompt.userChoice.then((choiceResult) => {
+      if (choiceResult.outcome === 'accepted') {
+        console.log('[PWA] User accepted the install prompt');
+        hidePwaPrompts();
+      }
+      deferredInstallPrompt = null;
+    });
+  } else {
+    // If on iOS Safari or prompt not ready
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isIos) {
+      Swal.fire({
+        title: 'วิธีติดตั้งบน iPhone / iPad 📲',
+        html: `
+          <div class="text-left space-y-3 mt-2 text-xs text-slate-600">
+            <p>คุณสามารถติดตั้ง <b>Verdante Smart Farm</b> ลงหน้าจอโฮมได้ง่ายๆ:</p>
+            <div class="flex items-center gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+              <span class="w-6 h-6 rounded-full bg-emerald-100 text-forest-700 font-bold flex items-center justify-center flex-shrink-0">1</span>
+              <span>แตะที่ปุ่ม <b>แชร์ (Share)</b> <i class="ti ti-share text-sm text-forest-700"></i> ด้านล่างของ Safari</span>
+            </div>
+            <div class="flex items-center gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+              <span class="w-6 h-6 rounded-full bg-emerald-100 text-forest-700 font-bold flex items-center justify-center flex-shrink-0">2</span>
+              <span>เลื่อนลงแล้วเลือก <b>"เพิ่มไปยังหน้าจอโฮม" (Add to Home Screen)</b></span>
+            </div>
+          </div>
+        `,
+        icon: 'info',
+        confirmButtonText: 'เข้าใจแล้ว',
+        confirmButtonColor: '#15803D'
+      });
+    } else {
+      Swal.fire({
+        title: 'ติดตั้งแอป Verdante 🌿',
+        text: 'หากเบราว์เซอร์ไม่แสดงหน้าต่างติดตั้ง คุณสามารถกดเมนู 3 จุด (⋮) ของเบราว์เซอร์ แล้วเลือก "ติดตั้งแอป" หรือ "เพิ่มลงในหน้าจอหลัก" (Add to Home Screen) ได้ทันทีครับ',
+        icon: 'info',
+        confirmButtonText: 'รับทราบ',
+        confirmButtonColor: '#15803D'
+      });
+    }
+  }
+}
+
+function hidePwaPrompts() {
+  document.getElementById('pwaInstallBanner')?.classList.add('hidden');
+  document.getElementById('btnInstallPwa')?.classList.add('hidden');
+}
+
+// Banner Dismiss Handler
+document.getElementById('btnBannerDismiss')?.addEventListener('click', () => {
+  document.getElementById('pwaInstallBanner')?.classList.add('hidden');
+  localStorage.setItem('verdante_pwa_banner_dismissed', 'true');
+});
+
+// Install Button Listeners
+document.getElementById('btnInstallPwa')?.addEventListener('click', triggerPwaInstall);
+document.getElementById('btnBannerInstall')?.addEventListener('click', triggerPwaInstall);
+
+// App Installed Event
+window.addEventListener('appinstalled', () => {
+  console.log('[PWA] Verdante Smart Farm installed successfully');
+  hidePwaPrompts();
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'success',
+    title: 'ติดตั้ง Verdante Smart Farm ลงหน้าจอโฮมสำเร็จ! 🌿',
+    showConfirmButton: false,
+    timer: 3000
+  });
+});

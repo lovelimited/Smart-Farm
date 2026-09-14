@@ -10,6 +10,14 @@
   <title>🌿 Verdante Smart Farm — ระบบฟาร์มอัจฉริยะ</title>
 
   <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Verdante">
+  <meta name="application-name" content="Verdante Smart Farm">
+  <meta name="mobile-web-app-capable" content="yes">
+  
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -88,6 +96,12 @@
 
       <!-- Quick Actions -->
       <div class="flex items-center gap-1.5">
+        <!-- Install PWA Button -->
+        <button id="btnInstallPwa" class="hidden h-9 px-3 rounded-xl bg-forest-700 hover:bg-forest-800 text-white text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 shadow-xs" title="ติดตั้งแอปบนหน้าจอมือถือ">
+          <i class="ti ti-download text-base" aria-hidden="true"></i>
+          <span class="hidden xs:inline">ติดตั้งแอป</span>
+        </button>
+
         <button id="btnOpenWifiModal" class="h-9 px-3 rounded-xl bg-forest-50 hover:bg-forest-100 text-forest-700 border border-forest-200/70 text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 shadow-xs" title="ตั้งค่า WiFi อุปกรณ์">
           <i class="ti ti-wifi text-base" aria-hidden="true"></i>
           <span class="hidden xs:inline">ตั้งค่า WiFi</span>
@@ -95,6 +109,29 @@
       </div>
     </div>
   </header>
+
+  <!-- ====== PWA INSTALL PROMPT BANNER ====== -->
+  <div id="pwaInstallBanner" class="hidden bg-gradient-to-r from-forest-800 via-forest-900 to-slate-900 text-white px-4 py-2.5 text-xs shadow-md transition-all">
+    <div class="max-w-md mx-auto flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center text-forest-200 flex-shrink-0">
+          <i class="ti ti-device-mobile text-lg"></i>
+        </div>
+        <div>
+          <span class="font-bold block">ติดตั้ง Verdante Smart Farm</span>
+          <span class="text-[11px] text-forest-200">เปิดเต็มหน้าจอ ใช้งานเร็วขึ้นเหมือนแอปจริง</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5 flex-shrink-0">
+        <button id="btnBannerInstall" class="px-3 py-1.5 bg-white text-forest-900 rounded-xl font-bold text-xs hover:bg-forest-50 transition active:scale-95 shadow-xs">
+          ติดตั้ง
+        </button>
+        <button id="btnBannerDismiss" class="w-7 h-7 text-forest-300 hover:text-white flex items-center justify-center transition" title="ปิด">
+          <i class="ti ti-x text-base"></i>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- ====== DISCONNECTED / PROVISIONING BANNER ====== -->
   <div id="offlineBanner" class="hidden bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-800 transition-all">

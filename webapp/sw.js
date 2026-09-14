@@ -1,62 +1,80 @@
 // ================================================================
-//  Smart Garden — Service Worker
-//  Offline caching for PWA support
+//  🌿 Verdante Smart Farm — Service Worker (PWA Offline Caching)
 // ================================================================
 
-const CACHE_NAME = 'smart-garden-v1';
-const ASSETS = [
-  '/',
-  '/index.html',
-  '/index.css',
-  '/app.js',
-  '/manifest.json'
+const CACHE_NAME = 'verdante-pwa-v2';
+const ASSETS_TO_CACHE = [
+  './',
+  './index.html',
+  './index.css',
+  './app.js',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png'
 ];
 
-// Install — Cache core assets
+// Install Event
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    })
+      return cache.addAll(ASSETS_TO_CACHE);
+    }).then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
-// Activate — Clean old caches
+// Activate Event (Cleanup Old Caches)
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter(key => key !== CACHE_NAME)
-            .map(key => caches.delete(key))
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Fetch — Network first, fallback to cache
+// Fetch Event (Network First, Fallback to Cache)
 self.addEventListener('fetch', (event) => {
-  // Skip Firebase and external API requests
-  if (event.request.url.includes('firebaseio.com') ||
-      event.request.url.includes('googleapis.com') ||
-      event.request.url.includes('gstatic.com') ||
-      event.request.url.includes('fonts.google')) {
+  // Only handle GET requests
+  if (event.request.method !== 'GET') return;
+
+  const url = event.request.url;
+
+  // Skip Firebase Realtime Database & Auth requests
+  if (url.includes('firebaseio.com') ||
+      url.includes('firebasedatabase.app') ||
+      url.includes('googleapis.com') ||
+      url.includes('gstatic.com') ||
+      url.includes('chrome-extension')) {
     return;
   }
 
   event.respondWith(
     fetch(event.request)
-      .then((response) => {
-        // Clone and cache the response
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, clone);
-        });
-        return response;
+      .then((networkResponse) => {
+        // Cache successful response
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+        }
+        return networkResponse;
       })
       .catch(() => {
-        return caches.match(event.request);
+        // Fallback to cache when offline
+        return caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) return cachedResponse;
+          // Fallback to index.html if request is navigation
+          if (event.request.mode === 'navigate') {
+            return caches.match('./index.html');
+          }
+        });
       })
   );
 });
