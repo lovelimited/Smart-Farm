@@ -71,7 +71,7 @@ void initHardware() {
 // ================================================================
 
 void setup() {
-  // ปิด Brownout Detector ป้องกัน ESP32 รีสตาร์ทรัวๆ จากไฟตกชั่วขณะตอนเปิด WiFi / Relay
+  // ปิด Brownout Detector ป้องกัน ESP32 รีสตาร์ทจากไฟตกชั่วขณะตอนเปิด WiFi / Relay
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
   // ตั้ง Buzzer pin

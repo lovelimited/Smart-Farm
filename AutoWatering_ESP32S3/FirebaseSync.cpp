@@ -52,6 +52,7 @@ int lastConfigVersion = -1;
 bool firebaseReady = false;
 bool wifiConnected = false;
 bool needClearCommand = false;
+unsigned long long lastProcessedCmdTime = 0;
 
 // ================================================================
 //  CAPTIVE PORTAL HTML INTERFACE (PROGMEM)
@@ -327,7 +328,6 @@ void initWiFi() {
   if (activeSSID.length() > 0) {
     Serial.print(F("[WIFI] Connecting to: ")); Serial.println(activeSSID);
     WiFi.mode(WIFI_STA);
-    WiFi.setTxPower(WIFI_POWER_17dBm); // ลดกำลังส่งเล็กน้อยเพื่อลดกระแสกระชาก ป้องกันไฟตก
     WiFi.begin(activeSSID.c_str(), activePass.c_str());
 
     unsigned long startAttempt = millis();
@@ -446,38 +446,40 @@ void syncFirebase() {
 
   unsigned long now = millis();
 
-  // Round-Robin Task Scheduler: ไม่ยิง Request ชนกันใน loop เดียวกัน ป้องกัน SSL/Memory Crash & Panic
-  static uint8_t syncStep = 0;
-  static unsigned long lastStepTime = 0;
+  // Safety: Skip Firebase operations if heap is critically low
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < 20000) {
+    Serial.printf("[FIREBASE] Low heap: %u bytes, skipping sync cycle\n", freeHeap);
+    return;
+  }
 
-  if (now - lastStepTime >= 1500) { // ทำงานห่างกันอย่างน้อย 1.5 วินาทีต่อ 1 Request
-    lastStepTime = now;
+  // Clear processed command asynchronously outside callback (prevents stack overflow / recursion)
+  if (needClearCommand) {
+    needClearCommand = false;
+    String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
+    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
+    return; // Stagger
+  }
 
-    if (needClearCommand) {
-      needClearCommand = false;
-      String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-      Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
-    } else {
-      switch (syncStep) {
-        case 0:
-          uploadStatus();       // วินาทีที่ 0, 4.5, 9 ...
-          syncStep = 1;
-          break;
-        case 1:
-          checkCommands();      // วินาทีที่ 1.5, 6, 10.5 ...
-          syncStep = 2;
-          break;
-        case 2:
-          if (now - lastConfigSync >= 10000) { // ซิงค์ config ทุก 10 วินาที
-            lastConfigSync = now;
-            checkConfigSync();
-          } else {
-            uploadStatus();
-          }
-          syncStep = 0;
-          break;
-      }
-    }
+  // Upload sensor status ทุก 3 วินาที
+  if (now - lastUploadTime >= FIREBASE_SYNC_INTERVAL) {
+    lastUploadTime = now;
+    uploadStatus();
+    return; // Stagger: only one operation per loop cycle
+  }
+
+  // Check commands ทุก 2 วินาที
+  if (now - lastCmdCheckTime >= FIREBASE_CMD_INTERVAL) {
+    lastCmdCheckTime = now;
+    checkCommands();
+    return; // Stagger
+  }
+
+  // Sync config ทุก 5 วินาที
+  if (now - lastConfigSync >= 5000) {
+    lastConfigSync = now;
+    checkConfigSync();
+    return; // Stagger
   }
 
   // Upload telemetry snapshot ลงประวัติกราฟ ทุก 10 นาที
@@ -572,13 +574,7 @@ void uploadStatus() {
   json += ",\"sd\":" + String(sdOK ? "true" : "false");
   json += ",\"wifi\":true";
   json += "}";
-  json += ",\"hw\":{";
-  json += "\"lcd\":" + String(lcdOK ? "true" : "false");
-  json += ",\"rtc\":" + String(rtcOK ? "true" : "false");
-  json += ",\"sht30\":" + String(sht30OK ? "true" : "false");
-  json += ",\"sd\":" + String(sdOK ? "true" : "false");
-  json += ",\"wifi\":true";
-  json += "}";
+
 
   // --- Alarm ---
   json += ",\"alarm\":{";
@@ -612,6 +608,27 @@ void commandCallback(AsyncResult &result) {
 
   String payload = result.c_str();
   if (payload == "null" || payload.length() < 3) return;
+
+  // Parse timestamp to prevent processing the same command multiple times
+  unsigned long long cmdTimestamp = 0;
+  int tsPos = payload.indexOf("\"timestamp\":");
+  if (tsPos >= 0) {
+    int valStart = tsPos + 12;
+    String valStr = "";
+    for (int i = valStart; i < (int)payload.length(); i++) {
+      char c = payload.charAt(i);
+      if (c == ',' || c == '}') break;
+      if (c >= '0' && c <= '9') valStr += c;
+    }
+    if (valStr.length() > 0) {
+      cmdTimestamp = strtoull(valStr.c_str(), NULL, 10);
+    }
+  }
+
+  // If this command has already been executed, ignore it to prevent loop
+  if (cmdTimestamp > 0 && cmdTimestamp == lastProcessedCmdTime) {
+    return;
+  }
 
   // Parse manual zone command
   // Expected format: {"manualZone":0,"manualAction":"start","manualDuration":10,"resetAlarm":false,"timestamp":123456}
@@ -669,7 +686,10 @@ void commandCallback(AsyncResult &result) {
       stopZone(zoneIdx);
     }
 
-    // Mark for clearing in next round-robin loop (prevents async re-entrancy crash)
+    if (cmdTimestamp > 0) {
+      lastProcessedCmdTime = cmdTimestamp;
+    }
+    // Mark to clear outside callback in syncFirebase() to prevent re-entrancy
     needClearCommand = true;
   }
 
@@ -687,7 +707,9 @@ void commandCallback(AsyncResult &result) {
     lcdDirty = true;
     beep(100);
 
-    // Mark for clearing in next round-robin loop
+    if (cmdTimestamp > 0) {
+      lastProcessedCmdTime = cmdTimestamp;
+    }
     needClearCommand = true;
   }
 }

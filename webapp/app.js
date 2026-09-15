@@ -743,6 +743,8 @@ function setZoneMode(zoneIndex, mode) {
       manualDuration: 0,
       timestamp: Date.now(),
       source: 'web_app_mode_off'
+    }).then(() => {
+      setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
     }).catch((err) => {
       handleFirebaseError(err, 'stop_valve_on_off_mode');
     });
@@ -856,6 +858,8 @@ function sendManualCommand(zone, action, duration) {
     manualDuration: duration,
     timestamp: Date.now(),
     source: 'web_app'
+  }).then(() => {
+    setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
   }).catch((err) => {
     handleFirebaseError(err, `sendManualCommand(${zone}, ${action})`);
   });
@@ -1245,6 +1249,8 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
       manualDuration: 0,
       timestamp: Date.now(),
       source: 'web_app_mode_off_save'
+    }).then(() => {
+      setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
     }).catch((err) => {
       handleFirebaseError(err, 'stop_valve_on_save_config');
     });
@@ -1983,6 +1989,7 @@ document.getElementById('btnResetAlarm')?.addEventListener('click', () => {
         timestamp: Date.now(),
         source: 'web_app'
       }).then(() => {
+        setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
         Swal.fire({
           toast: true,
           position: 'top',
