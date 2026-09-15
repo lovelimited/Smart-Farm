@@ -97,7 +97,7 @@
               <span id="connText" class="font-medium">กำลังเชื่อมต่อ...</span>
             </span>
             <span class="text-slate-300">•</span>
-            <span id="clockDisplay" class="font-mono text-[11px] text-slate-500">--:--:--</span>
+            <span id="clockDisplay" class="font-mono text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60" title="เวลานาฬิกาอุปกรณ์ RTC DS3231">--:--:--</span>
           </div>
         </div>
       </div>
@@ -167,7 +167,7 @@
         </div>
         <div class="relative z-10">
           <div class="flex items-center justify-between text-xs text-forest-200 mb-1">
-            <span class="flex items-center gap-1"><i class="ti ti-shield-check"></i> ระบบรดน้ำอัจฉริยะ</span>
+            <span class="flex items-center gap-1.5"><i class="ti ti-clock text-emerald-300"></i> เวลาอุปกรณ์: <b id="dashDeviceTime" class="font-mono text-white tracking-wider">--:--:--</b> <span id="dashDeviceDate" class="text-[11px] text-forest-200">(--/--/----)</span></span>
             <span class="bg-forest-600/60 px-2 py-0.5 rounded-full text-[11px]" id="fwBadge">FW v1.0</span>
           </div>
           <h2 class="text-xl font-bold tracking-tight text-white">ภาพรวมระบบฟาร์ม</h2>
@@ -198,10 +198,10 @@
           </div>
           <div class="mt-3">
             <div class="text-2xl font-bold text-slate-800 font-mono">
-              <span id="valTemp">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">°C</small>
+              <span id="valTemp">--.-</span><span class="text-sm font-normal text-slate-400 ml-0.5">°C</span>
             </div>
-            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
-              <div id="barTemp" class="bg-amber-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+            <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
+              <div class="bg-amber-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%" id="barTemp"></div>
             </div>
           </div>
         </div>
@@ -209,17 +209,17 @@
         <!-- Humidity -->
         <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col justify-between">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-medium text-slate-500">ความชื้นอากาศ</span>
+            <span class="text-xs font-medium text-slate-500">ความชื้นสัมพัทธ์</span>
             <div class="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
               <i class="ti ti-droplet-half-2 text-lg"></i>
             </div>
           </div>
           <div class="mt-3">
             <div class="text-2xl font-bold text-slate-800 font-mono">
-              <span id="valHumid">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">%</small>
+              <span id="valHumid">--.-</span><span class="text-sm font-normal text-slate-400 ml-0.5">%</span>
             </div>
-            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
-              <div id="barHumid" class="bg-sky-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+            <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
+              <div class="bg-sky-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%" id="barHumid"></div>
             </div>
           </div>
         </div>
@@ -247,7 +247,7 @@
                 <circle id="soilGauge0" class="text-emerald-500 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
               </svg>
               <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
-                <span id="valSoil0">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+                <span id="valSoil0">--</span><span id="unitSoil0" class="text-[10px] text-slate-400 font-normal">%</span>
               </div>
             </div>
             <span class="text-[10px] text-slate-500 mt-1" id="soilStatus0">ปกติ</span>
@@ -262,7 +262,7 @@
                 <circle id="soilGauge1" class="text-teal-500 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
               </svg>
               <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
-                <span id="valSoil1">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+                <span id="valSoil1">--</span><span id="unitSoil1" class="text-[10px] text-slate-400 font-normal">%</span>
               </div>
             </div>
             <span class="text-[10px] text-slate-500 mt-1" id="soilStatus1">ปกติ</span>
@@ -277,7 +277,7 @@
                 <circle id="soilGauge2" class="text-lime-600 stroke-current transition-all duration-700" stroke-width="8" stroke-linecap="round" fill="transparent" r="42" cx="50" cy="50" stroke-dasharray="0 264"/>
               </svg>
               <div class="absolute inset-0 flex items-center justify-center font-mono font-bold text-sm text-slate-800">
-                <span id="valSoil2">--</span><span class="text-[10px] text-slate-400 font-normal">%</span>
+                <span id="valSoil2">--</span><span id="unitSoil2" class="text-[10px] text-slate-400 font-normal">%</span>
               </div>
             </div>
             <span class="text-[10px] text-slate-500 mt-1" id="soilStatus2">ปกติ</span>
@@ -297,10 +297,17 @@
               <p class="text-[10px] text-slate-400">สภาพแวดล้อม ความชื้นดิน และการใช้น้ำ</p>
             </div>
           </div>
-          <!-- Time Range Pills -->
-          <div class="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-semibold" id="chartRangeTabs">
-            <button type="button" id="btnRange24h" onclick="changeChartRange('24h')" class="px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition">24 ชม.</button>
-            <button type="button" id="btnRange7d" onclick="changeChartRange('7d')" class="px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition">7 วัน</button>
+          <!-- Time Range Pills & Reset Button -->
+          <div class="flex items-center gap-1.5">
+            <div class="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-semibold" id="chartRangeTabs">
+              <button type="button" id="btnRange24h" onclick="changeChartRange('24h')" class="px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition whitespace-nowrap">1 วัน</button>
+              <button type="button" id="btnRange7d" onclick="changeChartRange('7d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">1 สัปดาห์</button>
+              <button type="button" id="btnRange30d" onclick="changeChartRange('30d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">1 เดือน</button>
+              <button type="button" id="btnRange90d" onclick="changeChartRange('90d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">3 เดือน</button>
+            </div>
+            <button type="button" onclick="confirmResetChartData()" class="h-6 px-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-semibold flex items-center gap-0.5 transition active:scale-95 border border-rose-200/60" title="ล้างประวัติข้อมูลกราฟที่ค้างอยู่">
+              <i class="ti ti-trash text-xs"></i> <span class="hidden sm:inline">ล้าง</span>
+            </button>
           </div>
         </div>
 

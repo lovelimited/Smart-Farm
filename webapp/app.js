@@ -193,6 +193,8 @@ function switchTab(tabId) {
 //  FIREBASE REALTIME LISTENERS
 // ================================================================
 
+let lastStatusReceivedTime = 0;
+
 // 1. Listen for device status
 statusRef.on('value', (snapshot) => {
   const data = snapshot.val();
@@ -200,6 +202,7 @@ statusRef.on('value', (snapshot) => {
     setConnectionState(false);
     return;
   }
+  lastStatusReceivedTime = Date.now();
   setConnectionState(true);
   state.lastData = data;
 
@@ -220,6 +223,19 @@ statusRef.on('value', (snapshot) => {
   console.warn('[Firebase] Status listen warning:', error);
   setConnectionState(false);
 });
+
+// Heartbeat Watchdog: Check every 2.5s if ESP32 hasn't published status in > 10s
+setInterval(() => {
+  const now = Date.now();
+  if (state.connected && lastStatusReceivedTime > 0 && (now - lastStatusReceivedTime > 10000)) {
+    console.warn('[Watchdog] No update from ESP32 for >10s. Device is offline/powered off.');
+    setConnectionState(false);
+    const clockEl = document.getElementById('clockDisplay');
+    if (clockEl) clockEl.textContent = '--:--:--';
+    const dashTimeEl = document.getElementById('dashDeviceTime');
+    if (dashTimeEl) dashTimeEl.textContent = 'ขาดการติดต่อ';
+  }
+}, 2500);
 
 // 2. Listen for Firebase network connection
 db.ref('.info/connected').on('value', (snap) => {
@@ -247,6 +263,20 @@ configRef.on('value', (snapshot) => {
         }
       });
     }
+
+    // Also check flat keys if present (from ESP32 firmware format)
+    for (let z = 0; z < 4; z++) {
+      if (typeof data[`z${z}_mode`] === 'number') {
+        state.zoneModes[z] = data[`z${z}_mode`];
+      }
+    }
+
+    renderDashboardZoneCards(state.lastData?.zones || []);
+    renderZoneControls(state.lastData);
+    if (state.currentTab === 'pageSchedules') {
+      renderScheduleSlots(state.selectedZone);
+    }
+
     renderScheduleSettings();
   }
 });
@@ -256,12 +286,17 @@ alarmHistoryRef.orderByKey().limitToLast(15).on('value', (snapshot) => {
   renderAlarmHistory(snapshot.val());
 });
 
-// 5. Listen for Historical Telemetry Log from Firebase
-historyRef.orderByChild('timestamp').limitToLast(48).on('value', (snapshot) => {
+// 5. Listen for Historical Telemetry Log (Real data from ESP32)
+historyRef.limitToLast(300).on('value', (snapshot) => {
   const val = snapshot.val();
   if (val) {
     state.firebaseHistory = Object.values(val);
-    if (historicalChartInstance && state.currentTab === 'pageDashboard') {
+    if (state.currentTab === 'pageDashboard') {
+      initHistoricalChart();
+    }
+  } else {
+    state.firebaseHistory = [];
+    if (state.currentTab === 'pageDashboard') {
       initHistoricalChart();
     }
   }
@@ -275,16 +310,28 @@ function setConnectionState(connected) {
   const dot = document.getElementById('connDot');
   const text = document.getElementById('connText');
   const banner = document.getElementById('offlineBanner');
+  const clockEl = document.getElementById('clockDisplay');
 
   if (connected) {
-    dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
-    text.textContent = 'ออนไลน์';
-    text.className = 'font-semibold text-emerald-700';
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+    if (text) {
+      text.textContent = 'ออนไลน์';
+      text.className = 'font-semibold text-emerald-700';
+    }
+    if (clockEl) {
+      clockEl.className = 'font-mono text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60';
+    }
     if (banner) banner.classList.add('hidden');
   } else {
-    dot.className = 'w-2 h-2 rounded-full bg-slate-300';
-    text.textContent = 'ออฟไลน์';
-    text.className = 'font-medium text-slate-500';
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-slate-300';
+    if (text) {
+      text.textContent = 'ออฟไลน์ (ขาดการเชื่อมต่อ)';
+      text.className = 'font-medium text-slate-500';
+    }
+    if (clockEl) {
+      clockEl.className = 'font-mono text-[11px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded';
+      clockEl.textContent = '--:--:--';
+    }
     if (banner) banner.classList.remove('hidden');
   }
 }
@@ -298,20 +345,30 @@ function renderDashboard(data) {
   // Auto-record telemetry snapshot for historical charts
   recordTelemetrySnapshot(data);
 
-  // Clock
+  // Clock & Date (from RTC DS3231)
   if (data.time) {
-    document.getElementById('clockDisplay').textContent = data.time;
+    const clockEl = document.getElementById('clockDisplay');
+    if (clockEl) clockEl.textContent = data.time;
+    const dashTimeEl = document.getElementById('dashDeviceTime');
+    if (dashTimeEl) dashTimeEl.textContent = data.time;
+  }
+  if (data.date) {
+    const dashDateEl = document.getElementById('dashDeviceDate');
+    if (dashDateEl) dashDateEl.textContent = `(${data.date})`;
   }
 
   // FW Badge
   if (data.fw) {
-    document.getElementById('fwBadge').textContent = 'FW v' + data.fw;
+    const fwEl = document.getElementById('fwBadge');
+    if (fwEl) fwEl.textContent = 'FW v' + data.fw;
   }
 
   // Flow rate & totals
   if (data.flow) {
-    document.getElementById('dashFlowRate').textContent = (data.flow.rate ?? 0).toFixed(2);
-    document.getElementById('dashFlowTotal').textContent = (data.flow.total ?? 0).toFixed(2);
+    const flowRateEl = document.getElementById('dashFlowRate');
+    const flowTotalEl = document.getElementById('dashFlowTotal');
+    if (flowRateEl) flowRateEl.textContent = (data.flow.rate ?? 0).toFixed(2);
+    if (flowTotalEl) flowTotalEl.textContent = (data.flow.total ?? 0).toFixed(2);
   }
 
   // Temperature
@@ -319,12 +376,12 @@ function renderDashboard(data) {
   const valTempEl = document.getElementById('valTemp');
   const barTempEl = document.getElementById('barTemp');
   if (typeof temp === 'number') {
-    valTempEl.textContent = temp.toFixed(1);
+    if (valTempEl) valTempEl.textContent = temp.toFixed(1);
     const pct = Math.min(100, Math.max(0, (temp / 45) * 100));
-    barTempEl.style.width = `${pct}%`;
+    if (barTempEl) barTempEl.style.width = `${pct}%`;
   } else {
-    valTempEl.textContent = '--';
-    barTempEl.style.width = '0%';
+    if (valTempEl) valTempEl.textContent = '--.-';
+    if (barTempEl) barTempEl.style.width = '0%';
   }
 
   // Humidity
@@ -332,11 +389,11 @@ function renderDashboard(data) {
   const valHumEl = document.getElementById('valHumid');
   const barHumEl = document.getElementById('barHumid');
   if (typeof hum === 'number') {
-    valHumEl.textContent = hum.toFixed(1);
-    barHumEl.style.width = `${Math.min(100, hum)}%`;
+    if (valHumEl) valHumEl.textContent = hum.toFixed(1);
+    if (barHumEl) barHumEl.style.width = `${Math.min(100, hum)}%`;
   } else {
-    valHumEl.textContent = '--';
-    barHumEl.style.width = '0%';
+    if (valHumEl) valHumEl.textContent = '--.-';
+    if (barHumEl) barHumEl.style.width = '0%';
   }
 
   // Soil Moisture Gauges (Zones 0, 1, 2)
@@ -346,23 +403,26 @@ function renderDashboard(data) {
 
   for (let i = 0; i < 3; i++) {
     const val = soils[i];
-    const err = soilErrors[i];
+    const err = soilErrors[i] || val === -1 || val === null || val === undefined;
     const gaugeEl = document.getElementById(`soilGauge${i}`);
     const valEl = document.getElementById(`valSoil${i}`);
+    const unitEl = document.getElementById(`unitSoil${i}`);
     const statusEl = document.getElementById(`soilStatus${i}`);
 
     if (err) {
-      valEl.textContent = 'ERR';
-      gaugeEl.setAttribute('stroke-dasharray', `0 ${circumference}`);
+      if (valEl) valEl.textContent = 'ERR';
+      if (unitEl) unitEl.style.display = 'none';
+      if (gaugeEl) gaugeEl.setAttribute('stroke-dasharray', `0 ${circumference}`);
       if (statusEl) {
-        statusEl.textContent = 'เซนเซอร์ขัดข้อง';
+        statusEl.textContent = 'ไม่ได้ต่อเซนเซอร์';
         statusEl.className = 'text-[10px] text-rose-500 font-semibold';
       }
     } else {
+      if (unitEl) unitEl.style.display = 'inline';
       const pct = typeof val === 'number' ? Math.max(0, Math.min(100, val)) : 0;
-      valEl.textContent = typeof val === 'number' ? val.toFixed(0) : '--';
+      if (valEl) valEl.textContent = typeof val === 'number' ? val.toFixed(0) : '--';
       const dash = (pct / 100) * circumference;
-      gaugeEl.setAttribute('stroke-dasharray', `${dash} ${circumference}`);
+      if (gaugeEl) gaugeEl.setAttribute('stroke-dasharray', `${dash} ${circumference}`);
       
       if (statusEl) {
         if (pct < 30) {
@@ -526,7 +586,7 @@ function renderZoneControls(data) {
         <div class="bg-surface-subtle p-2 rounded-xl text-center">
           <span class="text-[10px] text-slate-400 block">ความชื้นดิน</span>
           <span class="text-xs font-bold ${sErr ? 'text-rose-500' : 'text-slate-800'}">
-            ${sErr ? 'ERR' : (typeof sVal === 'number' ? sVal.toFixed(0) + '%' : '--')}
+            ${sErr ? 'ยังไม่ต่อ' : (typeof sVal === 'number' ? sVal.toFixed(0) + '%' : '--')}
           </span>
         </div>
       `;
@@ -639,21 +699,44 @@ function renderZoneControls(data) {
 function setZoneMode(zoneIndex, mode) {
   state.zoneModes[zoneIndex] = mode;
 
-  // Optimistic UI Update
+  // Sync with schedule settings page if this zone is currently viewed
+  if (state.selectedZone === zoneIndex) {
+    const cfgModeEl = document.getElementById('cfgZoneMode');
+    if (cfgModeEl) cfgModeEl.value = mode;
+    const moistBox = document.getElementById('smartMoistureBox');
+    if (moistBox) {
+      if (mode === 2) moistBox.classList.remove('hidden');
+      else moistBox.classList.add('hidden');
+    }
+  }
+
+  // Optimistic UI Update across all zone surfaces
   renderDashboardZoneCards(state.lastData?.zones || []);
   renderZoneControls(state.lastData);
 
   const modeLabel = MODE_NAMES[mode];
   const zoneName = ZONE_SHORT_NAMES[zoneIndex];
 
-  // Send mode update to Firebase config / commands
-  configRef.child(`zones/${zoneIndex}/mode`).set(mode)
-    .catch((err) => {
-      handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
-    });
+  // Send mode update to Firebase config with flat and nested keys + configVersion
+  const newConfigVersion = Math.floor(Date.now() / 1000);
+  const updates = {
+    [`zones/${zoneIndex}/mode`]: mode,
+    [`z${zoneIndex}_mode`]: mode,
+    configVersion: newConfigVersion
+  };
 
-  // If set to OFF, stop the valve if it was running
+  configRef.update(updates).catch((err) => {
+    handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
+  });
+
+  // If set to OFF, stop the valve immediately if running
   if (mode === 0) {
+    if (state.lastData?.zones?.[zoneIndex]) {
+      state.lastData.zones[zoneIndex].running = false;
+      state.lastData.zones[zoneIndex].remaining = 0;
+      renderDashboardZoneCards(state.lastData.zones);
+      renderZoneControls(state.lastData);
+    }
     commandRef.set({
       manualZone: zoneIndex,
       manualAction: 'stop',
@@ -833,7 +916,8 @@ function renderScheduleSettings() {
 
 document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
   const val = parseInt(e.target.value);
-  state.zoneModes[state.selectedZone] = val;
+  const z = state.selectedZone;
+  state.zoneModes[z] = val;
   const moistBox = document.getElementById('smartMoistureBox');
   if (moistBox) {
     if (val === 2) {
@@ -842,6 +926,9 @@ document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
       moistBox.classList.add('hidden');
     }
   }
+  // Immediately synchronize zone controls & dashboard cards
+  renderDashboardZoneCards(state.lastData?.zones || []);
+  renderZoneControls(state.lastData);
 });
 
 // Render dynamic schedule slots (Show ONLY active slots, not all 4 hardcoded)
@@ -1141,9 +1228,50 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
 
   // Update memory state
   state.zoneModes[z] = mode;
+  renderDashboardZoneCards(state.lastData?.zones || []);
+  renderZoneControls(state.lastData);
+
+  // If set to OFF, stop the valve if running
+  if (mode === 0) {
+    if (state.lastData?.zones?.[z]) {
+      state.lastData.zones[z].running = false;
+      state.lastData.zones[z].remaining = 0;
+      renderDashboardZoneCards(state.lastData.zones);
+      renderZoneControls(state.lastData);
+    }
+    commandRef.set({
+      manualZone: z,
+      manualAction: 'stop',
+      manualDuration: 0,
+      timestamp: Date.now(),
+      source: 'web_app_mode_off_save'
+    }).catch((err) => {
+      handleFirebaseError(err, 'stop_valve_on_save_config');
+    });
+  }
+
+  // Build updates with both nested structure and flat ESP32 keys + configVersion
+  const newVersion = Math.floor(Date.now() / 1000);
+  const updates = {
+    [`zones/${z}`]: zoneConfig,
+    [`z${z}_enabled`]: enabled,
+    [`z${z}_mode`]: mode,
+    [`z${z}_moistStart`]: moistureStart,
+    [`z${z}_moistStop`]: moistureStop,
+    configVersion: newVersion
+  };
+
+  for (let s = 0; s < 4; s++) {
+    const sch = schedulesToSave[s];
+    updates[`z${z}_s${s}_en`] = sch.enabled;
+    updates[`z${z}_s${s}_h`] = sch.hour;
+    updates[`z${z}_s${s}_m`] = sch.minute;
+    updates[`z${z}_s${s}_dur`] = sch.duration;
+    updates[`z${z}_s${s}_days`] = sch.days;
+  }
 
   // Write to Firebase
-  configRef.child(`zones/${z}`).set(zoneConfig).then(() => {
+  configRef.update(updates).then(() => {
     Swal.fire({
       toast: true,
       position: 'top',
@@ -1232,8 +1360,17 @@ function getChartDataset(metric, range) {
   let flowPoints = [];
 
   if (hasRealData) {
-    // Use actual telemetry data from Firebase
-    const records = state.firebaseHistory.slice(-12);
+    let records = [...state.firebaseHistory];
+    if (range === '24h') {
+      records = records.slice(-12);
+    } else if (range === '7d') {
+      records = records.slice(-28);
+    } else if (range === '30d') {
+      records = records.slice(-60);
+    } else {
+      records = records.slice(-120);
+    }
+
     labels = records.map(r => r.time || (r.date ? r.date.slice(5) : ''));
     tempPoints = records.map(r => r.temperature ?? 28);
     humidPoints = records.map(r => r.humidity ?? 70);
@@ -1243,19 +1380,51 @@ function getChartDataset(metric, range) {
     waterPoints = records.map(r => r.waterTotal ?? 0);
     flowPoints = records.map(r => r.flowRate ?? 0);
   } else {
-    // Realistic initial baseline points
-    const labels24h = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
-    const labels7d = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
-    labels = range === '24h' ? labels24h : labels7d;
-
-    tempPoints = range === '24h' ? [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5] : [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4];
-    humidPoints = range === '24h' ? [78, 82, 85, 72, 60, 58, 67, 74, 72] : [72, 68, 65, 70, 75, 78, 71];
-    soil0Points = range === '24h' ? [48, 45, 68, 62, 55, 48, 70, 64, 58] : [55, 60, 58, 62, 65, 59, 61];
-    soil1Points = range === '24h' ? [52, 50, 48, 72, 66, 58, 54, 75, 68] : [62, 65, 61, 64, 68, 63, 66];
-    soil2Points = range === '24h' ? [42, 40, 38, 65, 58, 50, 46, 68, 60] : [48, 52, 50, 55, 58, 54, 56];
-    waterPoints = range === '24h' ? [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1] : [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2];
-    flowPoints = range === '24h' ? [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4] : [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8];
+    // Realistic initial baseline points for 1 วัน (24h), 1 สัปดาห์ (7d), 1 เดือน (30d), 3 เดือน (90d)
+    if (range === '24h') {
+      labels = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
+      tempPoints = [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5];
+      humidPoints = [78, 82, 85, 72, 60, 58, 67, 74, 72];
+      soil0Points = [48, 45, 68, 62, 55, 48, 70, 64, 58];
+      soil1Points = [52, 50, 48, 72, 66, 58, 54, 75, 68];
+      soil2Points = [42, 40, 38, 65, 58, 50, 46, 68, 60];
+      waterPoints = [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1];
+      flowPoints = [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4];
+    } else if (range === '7d') {
+      labels = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์', 'อาทิตย์'];
+      tempPoints = [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4];
+      humidPoints = [72, 68, 65, 70, 75, 78, 71];
+      soil0Points = [55, 60, 58, 62, 65, 59, 61];
+      soil1Points = [62, 65, 61, 64, 68, 63, 66];
+      soil2Points = [48, 52, 50, 55, 58, 54, 56];
+      waterPoints = [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2];
+      flowPoints = [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8];
+    } else if (range === '30d') {
+      labels = ['วันที่ 1', 'วันที่ 5', 'วันที่ 10', 'วันที่ 15', 'วันที่ 20', 'วันที่ 25', 'วันที่ 30'];
+      tempPoints = [27.5, 28.2, 29.0, 31.4, 30.1, 28.8, 29.2];
+      humidPoints = [75, 72, 68, 64, 70, 74, 71];
+      soil0Points = [58, 62, 60, 65, 63, 66, 64];
+      soil1Points = [62, 64, 61, 67, 65, 68, 66];
+      soil2Points = [50, 54, 52, 57, 55, 59, 56];
+      waterPoints = [14.5, 16.2, 18.0, 15.8, 17.1, 16.5, 15.9];
+      flowPoints = [1.7, 1.8, 1.9, 1.7, 1.8, 1.9, 1.8];
+    } else {
+      // 90d (3 เดือน)
+      labels = ['สัปดาห์ 1-2', 'สัปดาห์ 3-4', 'สัปดาห์ 5-6', 'สัปดาห์ 7-8', 'สัปดาห์ 9-10', 'สัปดาห์ 11-12'];
+      tempPoints = [28.0, 28.6, 29.5, 30.8, 30.2, 29.1];
+      humidPoints = [73, 71, 66, 63, 68, 72];
+      soil0Points = [60, 61, 63, 64, 65, 63];
+      soil1Points = [63, 65, 66, 67, 68, 66];
+      soil2Points = [52, 53, 55, 56, 57, 55];
+      waterPoints = [98.4, 105.2, 112.0, 108.5, 114.0, 106.8];
+      flowPoints = [1.75, 1.80, 1.85, 1.82, 1.84, 1.80];
+    }
   }
+
+  // Save in memory for dynamic average calculation
+  state.currentChartDataset = {
+    tempPoints, humidPoints, soil0Points, soil1Points, soil2Points, waterPoints, flowPoints
+  };
 
   if (metric === 'env') {
     return {
@@ -1400,16 +1569,22 @@ function changeChartMetric(metric) {
 function changeChartRange(range) {
   state.chartRange = range;
 
-  const btn24h = document.getElementById('btnRange24h');
-  const btn7d = document.getElementById('btnRange7d');
+  const btnMap = {
+    '24h': 'btnRange24h',
+    '7d': 'btnRange7d',
+    '30d': 'btnRange30d',
+    '90d': 'btnRange90d'
+  };
 
-  if (range === '24h') {
-    btn24h.className = 'px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition';
-    btn7d.className = 'px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium';
-  } else {
-    btn7d.className = 'px-2.5 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition';
-    btn24h.className = 'px-2.5 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium';
-  }
+  Object.entries(btnMap).forEach(([r, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (r === range) {
+      el.className = 'px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition whitespace-nowrap';
+    } else {
+      el.className = 'px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap font-medium';
+    }
+  });
 
   initHistoricalChart();
 }
@@ -1418,17 +1593,77 @@ function updateChartSummaryText(metric, range) {
   const summaryEl = document.getElementById('chartSummaryText');
   if (!summaryEl) return;
 
-  if (metric === 'env') {
-    summaryEl.textContent = range === '24h' 
-      ? 'อุณหภูมิเฉลี่ย 28.5°C • ความชื้น 72% (24 ชม. ล่าสุด)'
-      : 'อุณหภูมิเฉลี่ย 29.4°C • ความชื้น 71% (7 วันที่ผ่านมา)';
-  } else if (metric === 'soil') {
-    summaryEl.textContent = 'ความชื้นดินเฉลี่ย 3 แปลงอยู่ในเกณฑ์สมบูรณ์ (55% - 68%)';
+  const d = state.currentChartDataset;
+  const rangeLabels = {
+    '24h': '24 ชม. ล่าสุด',
+    '7d': '7 วันย้อนหลัง',
+    '30d': '1 เดือนย้อนหลัง',
+    '90d': '3 เดือนย้อนหลัง'
+  };
+  const rLabel = rangeLabels[range] || range;
+
+  if (d && d.tempPoints && d.tempPoints.length > 0) {
+    if (metric === 'env') {
+      const avgT = (d.tempPoints.reduce((a, b) => a + b, 0) / d.tempPoints.length).toFixed(1);
+      const avgH = (d.humidPoints.reduce((a, b) => a + b, 0) / d.humidPoints.length).toFixed(0);
+      summaryEl.textContent = `อุณหภูมิเฉลี่ย ${avgT}°C • ความชื้นสัมพัทธ์เฉลี่ย ${avgH}% (${rLabel})`;
+    } else if (metric === 'soil') {
+      const avgS0 = (d.soil0Points.reduce((a, b) => a + b, 0) / d.soil0Points.length).toFixed(0);
+      const avgS1 = (d.soil1Points.reduce((a, b) => a + b, 0) / d.soil1Points.length).toFixed(0);
+      const avgS2 = (d.soil2Points.reduce((a, b) => a + b, 0) / d.soil2Points.length).toFixed(0);
+      summaryEl.textContent = `ความชื้นดินเฉลี่ย: Z1: ${avgS0}% • Z2: ${avgS1}% • Z3: ${avgS2}% (${rLabel})`;
+    } else {
+      const totalW = d.waterPoints.reduce((a, b) => a + b, 0).toFixed(1);
+      const avgF = (d.flowPoints.reduce((a, b) => a + b, 0) / d.flowPoints.length).toFixed(2);
+      summaryEl.textContent = `ปริมาณน้ำรวม: ${totalW} L • อัตราไหลเฉลี่ย ${avgF} L/m (${rLabel})`;
+    }
   } else {
-    summaryEl.textContent = range === '24h'
-      ? 'การใช้น้ำรวม 24 ชม.: 13.6 ลิตร'
-      : 'การใช้น้ำรวม 7 วัน: 107.0 ลิตร (เฉลี่ย 15.2 ลิตร/วัน)';
+    if (metric === 'env') {
+      summaryEl.textContent = `อุณหภูมิเฉลี่ย 28.5°C • ความชื้นสัมพัทธ์เฉลี่ย 72% (${rLabel})`;
+    } else if (metric === 'soil') {
+      summaryEl.textContent = `ความชื้นดินเฉลี่ย 3 แปลงสมบูรณ์ 55% - 68% (${rLabel})`;
+    } else {
+      summaryEl.textContent = `การใช้น้ำรวม: 15.2 ลิตร (${rLabel})`;
+    }
   }
+}
+
+// Reset Historical Chart Data with SweetAlert2 Confirmation
+function confirmResetChartData() {
+  Swal.fire({
+    title: 'ยืนยันการล้างประวัติข้อมูลกราฟ? 🗑️',
+    html: `
+      <div class="text-left text-xs text-slate-600 space-y-2">
+        <p>คุณต้องการลบข้อมูลประวัติการวัดและสถิติการใช้น้ำย้อนหลังทั้งหมดที่บันทึกไว้ใน Firebase ใช่หรือไม่?</p>
+        <div class="p-3 bg-rose-50 text-rose-700 rounded-xl border border-rose-200">
+          ⚠️ <b>คำเตือน:</b> เมื่อลบแล้ว ข้อมูลเก่าที่ค้างอยู่จะถูกเคลียร์และไม่สามารถกู้คืนได้
+        </div>
+      </div>
+    `,
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'ยืนยันล้างข้อมูล',
+    cancelButtonText: 'ยกเลิก',
+    confirmButtonColor: '#e11d48',
+    cancelButtonColor: '#94a3b8',
+    reverseButtons: true
+  }).then((result) => {
+    if (result.isConfirmed) {
+      historyRef.remove().then(() => {
+        state.firebaseHistory = [];
+        initHistoricalChart();
+        Swal.fire({
+          icon: 'success',
+          title: 'ล้างข้อมูลประวัติกราฟเรียบร้อยแล้ว 🌿',
+          text: 'ข้อมูลกราฟถูกรีเซ็ตและพร้อมเริ่มเก็บสถิติรอบใหม่แล้วครับ',
+          confirmButtonColor: '#15803D',
+          timer: 2200
+        });
+      }).catch((err) => {
+        handleFirebaseError(err, 'resetChartHistory');
+      });
+    }
+  });
 }
 
 function updateHistoricalChartLive(data) {
@@ -1690,12 +1925,17 @@ function renderAlarmPage(data) {
     navBadge.classList.add('hidden');
   }
 
-  // Hardware Status
-  const hw = data.hw || {};
-  setHwBadge('hwLcdStatus', hw.lcd);
-  setHwBadge('hwRtcStatus', hw.rtc);
-  setHwBadge('hwSht30Status', hw.sht30);
-  setHwBadge('hwSdStatus', hw.sd);
+  // Hardware Status (reads data.hardware or data.hw with smart fallbacks)
+  const hw = data.hardware || data.hw || {};
+  const sht30Ok = (hw.sht30 === true) || (typeof data.temperature === 'number' && !isNaN(data.temperature) && data.temperature > 0);
+  const rtcOk = (hw.rtc === true) || (!!data.time && data.time !== '--:--:--');
+  const lcdOk = (hw.lcd === true) || (hw.lcd !== false && state.connected);
+  const sdOk = (hw.sd === true);
+
+  setHwBadge('hwLcdStatus', lcdOk);
+  setHwBadge('hwRtcStatus', rtcOk);
+  setHwBadge('hwSht30Status', sht30Ok);
+  setHwBadge('hwSdStatus', sdOk);
   setHwBadge('hwWifiStatus', state.connected);
 
   // Diagnostics

@@ -554,6 +554,13 @@ void uploadStatus() {
   json += ",\"sd\":" + String(sdOK ? "true" : "false");
   json += ",\"wifi\":true";
   json += "}";
+  json += ",\"hw\":{";
+  json += "\"lcd\":" + String(lcdOK ? "true" : "false");
+  json += ",\"rtc\":" + String(rtcOK ? "true" : "false");
+  json += ",\"sht30\":" + String(sht30OK ? "true" : "false");
+  json += ",\"sd\":" + String(sdOK ? "true" : "false");
+  json += ",\"wifi\":true";
+  json += "}";
 
   // --- Alarm ---
   json += ",\"alarm\":{";

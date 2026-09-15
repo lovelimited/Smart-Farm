@@ -51,8 +51,8 @@
 // ================================================================
 
 // --- WiFi Credentials (เปลี่ยนเป็นค่าจริงก่อน Flash) ---
-#define WIFI_SSID           "YOUR_WIFI_SSID"
-#define WIFI_PASS           "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID           "Krittapot"
+#define WIFI_PASS           "123456789a"
 #define WIFI_CONNECT_TIMEOUT 15000   // ms timeout การเชื่อมต่อ WiFi
 
 // --- Firebase Realtime Database ---
