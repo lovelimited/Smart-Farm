@@ -5,8 +5,10 @@
 #include "Storage.h"
 
 #include <WiFi.h>
-#include <FirebaseClient.h>
 #include <WiFiClientSecure.h>
+
+#define ENABLE_DATABASE
+#include <FirebaseClient.h>
 
 // ================================================================
 //  FIREBASE SYNC MODULE
@@ -15,11 +17,11 @@
 
 // --- WiFi & Firebase Objects ---
 WiFiClientSecure ssl;
-DefaultNetwork network;
-AsyncClientClass asyncClient(ssl, getNetwork(network));
+AsyncClientClass asyncClient(ssl);
 
 FirebaseApp app;
 RealtimeDatabase Database;
+AsyncResult syncResult;
 
 // --- Auth ---
 NoAuth noAuth;
@@ -273,7 +275,7 @@ void uploadStatus() {
   json += "}";
 
   // Send to Firebase
-  Database.set<object_t>(asyncClient, "/devices/esp32/status", object_t(json));
+  Database.set<object_t>(asyncClient, "/devices/esp32/status", object_t(json), syncResult);
 }
 
 // ================================================================
@@ -286,7 +288,7 @@ void commandCallback(AsyncResult &result) {
   if (!result.isResult()) return;
   if (result.isError()) return;
 
-  String payload = result.to<RealtimeDatabaseResult>().to<String>();
+  String payload = result.c_str();
   if (payload == "null" || payload.length() < 3) return;
 
   // Parse manual zone command
@@ -347,7 +349,7 @@ void commandCallback(AsyncResult &result) {
 
     // Clear the command after execution
     String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson));
+    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
   }
 
   // Parse resetAlarm
@@ -366,7 +368,7 @@ void commandCallback(AsyncResult &result) {
 
     // Clear the command
     String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson));
+    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
   }
 }
 
@@ -384,7 +386,7 @@ void configCallback(AsyncResult &result) {
   if (!result.isResult()) return;
   if (result.isError()) return;
 
-  String payload = result.to<RealtimeDatabaseResult>().to<String>();
+  String payload = result.c_str();
   if (payload == "null" || payload.length() < 3) return;
 
   // Parse configVersion
@@ -551,11 +553,11 @@ void sendAlarmToFirebase() {
   json += ",\"timestamp\":\"" + String(timeBuf) + "\"";
   json += "}";
 
-  Database.set<object_t>(asyncClient, "/devices/esp32/status/alarm", object_t(json));
+  Database.set<object_t>(asyncClient, "/devices/esp32/status/alarm", object_t(json), syncResult);
 
   // Also push to alarm history
   String histJson = json;
-  Database.push<object_t>(asyncClient, "/devices/esp32/alarmHistory", object_t(histJson));
+  Database.push<object_t>(asyncClient, "/devices/esp32/alarmHistory", object_t(histJson), syncResult);
 }
 
 // ================================================================
@@ -589,6 +591,6 @@ void uploadHistoryLog() {
   json += ",\"flowRate\":" + String(flowRate, 2);
   json += "}";
 
-  Database.push<object_t>(asyncClient, "/devices/esp32/history", object_t(json));
+  Database.push<object_t>(asyncClient, "/devices/esp32/history", object_t(json), syncResult);
   Serial.println(F("[FIREBASE] Telemetry log saved to /devices/esp32/history"));
 }
