@@ -6,13 +6,17 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 
 #define ENABLE_DATABASE
 #include <FirebaseClient.h>
 
 // ================================================================
-//  FIREBASE SYNC MODULE
+//  FIREBASE SYNC MODULE & AP CAPTIVE PORTAL
 //  Two-way sync ระหว่าง ESP32-S3 กับ Firebase Realtime Database
+//  พร้อมระบบ Access Point (AP) และ Captive Portal ตั้งค่า Wi-Fi ผ่านมือถือ
 // ================================================================
 
 // --- WiFi & Firebase Objects ---
@@ -22,6 +26,13 @@ AsyncClientClass asyncClient(ssl);
 FirebaseApp app;
 RealtimeDatabase Database;
 AsyncResult syncResult;
+
+// --- AP & Captive Portal Objects ---
+WebServer apServer(80);
+DNSServer dnsServer;
+bool apModeActive = false;
+String activeSSID = "";
+String activePass = "";
 
 // --- Auth ---
 NoAuth noAuth;
@@ -42,19 +53,167 @@ bool firebaseReady = false;
 bool wifiConnected = false;
 
 // ================================================================
-//  WiFi INITIALIZATION
+//  CAPTIVE PORTAL HTML INTERFACE (PROGMEM)
 // ================================================================
 
-void initWiFi() {
-  Serial.println(F("[WIFI] Connecting..."));
-  Serial.print(F("[WIFI] SSID: ")); Serial.println(WIFI_SSID);
+static const char PORTAL_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Smart Farm - ตั้งค่า Wi-Fi</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { background: #f0fdf4; color: #1e293b; padding: 16px; display: flex; justify-content: center; min-height: 100vh; align-items: center; }
+  .card { background: #ffffff; max-width: 400px; width: 100%; border-radius: 24px; padding: 24px; box-shadow: 0 12px 30px -5px rgba(22,101,52,0.12); border: 1px solid #dcfce7; }
+  .header { text-align: center; margin-bottom: 20px; }
+  .icon-wrap { width: 56px; height: 56px; background: #dcfce7; color: #15803d; border-radius: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 28px; margin-bottom: 10px; }
+  h1 { font-size: 19px; color: #0f172a; font-weight: 800; letter-spacing: -0.5px; }
+  p.sub { font-size: 12px; color: #64748b; margin-top: 4px; }
+  .section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #15803d; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-rescan { background: none; border: none; color: #15803d; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: underline; }
+  .net-list { max-height: 160px; overflow-y: auto; margin-bottom: 16px; border: 1px solid #e2e8f0; border-radius: 14px; background: #f8fafc; }
+  .net-item { padding: 10px 14px; border-bottom: 1px solid #edf2f7; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 13px; transition: background 0.15s; }
+  .net-item:last-child { border-bottom: none; }
+  .net-item:hover, .net-item:active { background: #dcfce7; }
+  .net-name { font-weight: 600; color: #1e293b; }
+  .net-sig { font-size: 11px; color: #64748b; }
+  .form-group { margin-bottom: 14px; }
+  label { display: block; font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 6px; }
+  input[type="text"], input[type="password"] { width: 100%; padding: 12px 14px; border: 1.5px solid #cbd5e1; border-radius: 14px; font-size: 14px; color: #0f172a; transition: all 0.2s; }
+  input:focus { outline: none; border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.18); background: #ffffff; }
+  .pass-wrapper { position: relative; }
+  .toggle-btn { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b; }
+  .submit-btn { width: 100%; background: #16a34a; color: #ffffff; border: none; padding: 14px; border-radius: 14px; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(22,163,74,0.3); transition: all 0.15s; }
+  .submit-btn:active { background: #15803d; transform: scale(0.98); }
+  .footer { font-size: 11px; color: #64748b; text-align: center; margin-top: 16px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="icon-wrap">🌿</div>
+    <h1>Smart Farm ESP32-S3</h1>
+    <p class="sub">ตั้งค่า Wi-Fi เพื่อเชื่อมต่อกับระบบคลาวด์</p>
+  </div>
+  <div class="section-title">
+    <span>Wi-Fi ที่ตรวจพบ (2.4 GHz)</span>
+    <button type="button" class="btn-rescan" onclick="scanWifi()">🔄 ค้นหาใหม่</button>
+  </div>
+  <div class="net-list" id="netList">
+    <div style="padding: 16px; text-align: center; font-size: 12px; color: #64748b;">กำลังค้นหา Wi-Fi รอบตัว...</div>
+  </div>
+  <form action="/save" method="POST">
+    <div class="form-group">
+      <label>ชื่อ Wi-Fi (SSID):</label>
+      <input type="text" id="ssid" name="ssid" required placeholder="แตะเลือกจากรายการด้านบน">
+    </div>
+    <div class="form-group">
+      <label>รหัสผ่าน (Password):</label>
+      <div class="pass-wrapper">
+        <input type="password" id="pass" name="pass" placeholder="ใส่รหัสผ่าน Wi-Fi">
+        <button type="button" class="toggle-btn" onclick="togglePass()">👁</button>
+      </div>
+    </div>
+    <button type="submit" class="submit-btn">💾 บันทึกและเชื่อมต่อ (Connect)</button>
+  </form>
+  <p class="footer">อุปกรณ์จะบันทึกการตั้งค่านี้ลงชิป NVS และเชื่อมต่อไปยัง Firebase อัตโนมัติ</p>
+</div>
+<script>
+function selectNet(name) {
+  document.getElementById('ssid').value = name;
+  document.getElementById('pass').focus();
+}
+function togglePass() {
+  const p = document.getElementById('pass');
+  p.type = (p.type === 'password') ? 'text' : 'password';
+}
+function scanWifi() {
+  const el = document.getElementById('netList');
+  el.innerHTML = '<div style="padding:16px;text-align:center;font-size:12px;color:#64748b;">กำลังค้นหา Wi-Fi...</div>';
+  fetch('/scan').then(r => r.json()).then(list => {
+    if (!list || list.length === 0) {
+      el.innerHTML = '<div style="padding:16px;text-align:center;font-size:12px;color:#94a3b8;">ไม่พบ Wi-Fi (สามารถกรอกเองได้)</div>';
+      return;
+    }
+    el.innerHTML = list.map(n => `
+      <div class="net-item" onclick="selectNet('${n.ssid}')">
+        <span class="net-name">📶 ${n.ssid}</span>
+        <span class="net-sig">${n.rssi} dBm</span>
+      </div>
+    `).join('');
+  }).catch(() => {
+    el.innerHTML = '<div style="padding:14px;text-align:center;font-size:12px;color:#94a3b8;">แตะด้านล่างเพื่อพิมพ์ชื่อ Wi-Fi เอง</div>';
+  });
+}
+window.onload = scanWifi;
+</script>
+</body>
+</html>
+)rawliteral";
 
+// ================================================================
+//  PORTAL REQUEST HANDLERS
+// ================================================================
+
+void handlePortalScan() {
+  int n = WiFi.scanNetworks(false, false);
+  String json = "[";
+  for (int i = 0; i < n; ++i) {
+    if (WiFi.SSID(i).length() == 0) continue;
+    if (json.length() > 1) json += ",";
+    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]";
+  WiFi.scanDelete();
+  apServer.send(200, "application/json", json);
+}
+
+void handlePortalSave() {
+  String newSSID = apServer.arg("ssid");
+  String newPass = apServer.arg("pass");
+  newSSID.trim();
+  newPass.trim();
+
+  if (newSSID.length() == 0) {
+    apServer.send(400, "text/html; charset=utf-8", "<h3>กรุณาระบุชื่อ Wi-Fi</h3><a href='/'>ย้อนกลับ</a>");
+    return;
+  }
+
+  // 1. บันทึกลง Preferences (NVS Flash)
+  Preferences wifiPrefs;
+  wifiPrefs.begin("wifi_cfg", false);
+  wifiPrefs.putString("ssid", newSSID);
+  wifiPrefs.putString("pass", newPass);
+  wifiPrefs.end();
+
+  activeSSID = newSSID;
+  activePass = newPass;
+
+  String resp = F("<!DOCTYPE html><html lang='th'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+                  "<title>บันทึกสำเร็จ</title><style>body{font-family:sans-serif;background:#f0fdf4;padding:24px;text-align:center;color:#0f172a;}"
+                  ".card{background:#fff;max-width:380px;margin:30px auto;padding:28px 20px;border-radius:20px;box-shadow:0 10px 25px rgba(0,0,0,0.06);}"
+                  "h2{color:#16a34a;margin-bottom:8px;font-size:20px;}</style></head><body>"
+                  "<div class='card'><h2>✅ บันทึก Wi-Fi สำเร็จ!</h2>"
+                  "<p style='font-size:14px;color:#334155;margin-top:8px;'>ESP32 กำลังเชื่อมต่อไปยัง</p>"
+                  "<p style='font-size:16px;font-weight:700;color:#16a34a;margin:6px 0;'>");
+  resp += newSSID;
+  resp += F("</p><p style='font-size:12px;color:#64748b;margin-top:14px;'>เมื่อเชื่อมต่อสำเร็จ Wi-Fi Setup นี้จะปิดตัวลงอัตโนมัติ และระบบจะเริ่มทำงานร่วมกับคลาวด์ Firebase</p></div></body></html>");
+  
+  apServer.send(200, "text/html; charset=utf-8", resp);
+
+  delay(1200);
+
+  Serial.print(F("[WIFI] Connecting to newly saved WiFi: "));
+  Serial.println(activeSSID);
+
+  WiFi.disconnect();
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(activeSSID.c_str(), activePass.c_str());
 
   unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && 
-         millis() - startAttempt < WIFI_CONNECT_TIMEOUT) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
     delay(250);
     Serial.print(".");
   }
@@ -62,20 +221,147 @@ void initWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     wifiConnected = true;
-    Serial.print(F("[WIFI] Connected! IP: "));
+    apModeActive = false;
+    dnsServer.stop();
+    apServer.stop();
+    Serial.print(F("[WIFI] Connected! New IP: "));
     Serial.println(WiFi.localIP());
+
+    beep(100);
+    delay(150);
+    beep(100);
+
+    initFirebase();
+
+    if (lcdOK) {
+      lcdDirty = true;
+      currentMenu = ST_DASHBOARD;
+    }
   } else {
-    wifiConnected = false;
-    Serial.println(F("[WIFI] Connection FAILED — Firebase disabled"));
-    Serial.println(F("[WIFI] System continues in offline mode"));
+    Serial.println(F("[WIFI] Connect failed! Reverting to AP Mode..."));
+    startWiFiAP();
   }
+}
+
+void handlePortalRedirect() {
+  apServer.sendHeader("Location", "http://192.168.4.1/", true);
+  apServer.send(302, "text/plain", "");
+}
+
+// ================================================================
+//  START ACCESS POINT & CAPTIVE PORTAL
+// ================================================================
+
+void startWiFiAP() {
+  apModeActive = true;
+  wifiConnected = false;
+
+  Serial.println(F("\n[WIFI] ========================================"));
+  Serial.println(F("[WIFI] Starting AP Hotspot: 'SmartFarm-Setup'"));
+  Serial.println(F("[WIFI] ========================================"));
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("SmartFarm-Setup", ""); // Open network เพื่อให้เชื่อมต่อง่ายที่สุด
+
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print(F("[WIFI] AP Started! IP: "));
+  Serial.println(apIP);
+
+  // เริ่ม DNS Server พอร์ต 53 เพื่อดักทุกลิงก์
+  dnsServer.start(53, "*", apIP);
+
+  // ตั้งค่า WebServer routes
+  apServer.on("/", HTTP_GET, []() {
+    apServer.send_P(200, "text/html; charset=utf-8", PORTAL_HTML);
+  });
+  apServer.on("/save", HTTP_POST, handlePortalSave);
+  apServer.on("/scan", HTTP_GET, handlePortalScan);
+  // Apple / Android captive detection routes
+  apServer.on("/generate_204", HTTP_GET, []() {
+    apServer.send_P(200, "text/html; charset=utf-8", PORTAL_HTML);
+  });
+  apServer.on("/hotspot-detect.html", HTTP_GET, []() {
+    apServer.send_P(200, "text/html; charset=utf-8", PORTAL_HTML);
+  });
+  apServer.onNotFound(handlePortalRedirect);
+  apServer.begin();
+
+  Serial.println(F("[WIFI] Captive Portal ready at http://192.168.4.1"));
+
+  // แสดงผลบนหน้าจอ LCD
+  if (lcdOK) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("  WIFI SETUP MODE   "));
+    lcd.setCursor(0, 1);
+    lcd.print(F("AP:SmartFarm-Setup  "));
+    lcd.setCursor(0, 2);
+    lcd.print(F("IP: 192.168.4.1     "));
+    lcd.setCursor(0, 3);
+    lcd.print(F("Connect with phone  "));
+  }
+}
+
+// ================================================================
+//  WiFi INITIALIZATION
+// ================================================================
+
+void initWiFi() {
+  Serial.println(F("[WIFI] Checking saved credentials..."));
+
+  // 1. อ่านค่าที่บันทึกไว้ใน NVS Preferences
+  Preferences wifiPrefs;
+  wifiPrefs.begin("wifi_cfg", true);
+  activeSSID = wifiPrefs.getString("ssid", "");
+  activePass = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+
+  // 2. ถ้าใน NVS ว่าง ให้ลองใช้ค่าจาก Config.h หากมีการเปลี่ยนจาก "YOUR_WIFI_SSID"
+  if (activeSSID.length() == 0 && String(WIFI_SSID) != "YOUR_WIFI_SSID" && String(WIFI_SSID).length() > 0) {
+    activeSSID = WIFI_SSID;
+    activePass = WIFI_PASS;
+  }
+
+  // 3. ถ้ามี SSID ให้ลองเชื่อมต่อ STA ก่อน
+  if (activeSSID.length() > 0) {
+    Serial.print(F("[WIFI] Connecting to: ")); Serial.println(activeSSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(activeSSID.c_str(), activePass.c_str());
+
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+      delay(250);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiConnected = true;
+      apModeActive = false;
+      Serial.print(F("[WIFI] Connected! IP: "));
+      Serial.println(WiFi.localIP());
+      return;
+    }
+    Serial.println(F("[WIFI] Connect failed. Switching to AP Setup Mode..."));
+  } else {
+    Serial.println(F("[WIFI] No credentials saved. Switching to AP Setup Mode..."));
+  }
+
+  // 4. หากต่อไม่ได้หรือยังไม่มีการตั้งค่า Wi-Fi -> ปล่อย Hotspot ให้อัตโนมัติทันที
+  startWiFiAP();
 }
 
 bool isWiFiConnected() {
   return WiFi.status() == WL_CONNECTED;
 }
 
+bool isAPMode() {
+  return apModeActive;
+}
+
 void reconnectWiFi() {
+  if (apModeActive) return;
+
   unsigned long now = millis();
   if (now - lastWiFiCheck < 30000) return; // ลอง reconnect ทุก 30 วินาที
   lastWiFiCheck = now;
@@ -83,7 +369,11 @@ void reconnectWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(F("[WIFI] Reconnecting..."));
     WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    if (activeSSID.length() > 0) {
+      WiFi.begin(activeSSID.c_str(), activePass.c_str());
+    } else {
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+    }
     
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 5000) {
@@ -132,6 +422,13 @@ void initFirebase() {
 // ================================================================
 
 void syncFirebase() {
+  // หากอยู่ในโหมด AP Setup ให้ประมวลผล WebServer + DNS
+  if (apModeActive) {
+    dnsServer.processNextRequest();
+    apServer.handleClient();
+    return;
+  }
+
   // ถ้าไม่มี WiFi ลอง reconnect
   if (!isWiFiConnected()) {
     reconnectWiFi();

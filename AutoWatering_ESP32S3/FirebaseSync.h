@@ -24,8 +24,10 @@ void checkConfigSync();     // ซิงค์ Config (Schedule, Moisture, etc.)
 void sendAlarmToFirebase(); // ส่ง Alarm notification ขึ้น Firebase
 void uploadHistoryLog();    // ส่ง Telemetry Snapshot ขึ้น /devices/esp32/history
 
-// --- WiFi Status ---
+// --- WiFi Status & AP Provisioning ---
 bool isWiFiConnected();
+bool isAPMode();
 void reconnectWiFi();
+void startWiFiAP();         // เปิด Wi-Fi Access Point (SmartFarm-Setup) สำหรับตั้งค่าผ่านมือถือ
 
 #endif // FIREBASE_SYNC_H
