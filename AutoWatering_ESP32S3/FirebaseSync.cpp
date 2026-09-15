@@ -51,6 +51,7 @@ int lastConfigVersion = -1;
 // --- Connection status ---
 bool firebaseReady = false;
 bool wifiConnected = false;
+bool needClearCommand = false;
 
 // ================================================================
 //  CAPTIVE PORTAL HTML INTERFACE (PROGMEM)
@@ -326,6 +327,7 @@ void initWiFi() {
   if (activeSSID.length() > 0) {
     Serial.print(F("[WIFI] Connecting to: ")); Serial.println(activeSSID);
     WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_17dBm); // ลดกำลังส่งเล็กน้อยเพื่อลดกระแสกระชาก ป้องกันไฟตก
     WiFi.begin(activeSSID.c_str(), activePass.c_str());
 
     unsigned long startAttempt = millis();
@@ -442,24 +444,38 @@ void syncFirebase() {
   app.loop();
   Database.loop();
 
-  unsigned long now = millis();
+  // Round-Robin Task Scheduler: ไม่ยิง Request ชนกันใน loop เดียวกัน ป้องกัน SSL/Memory Crash & Panic
+  static uint8_t syncStep = 0;
+  static unsigned long lastStepTime = 0;
 
-  // Upload sensor status ทุก 2 วินาที
-  if (now - lastUploadTime >= FIREBASE_SYNC_INTERVAL) {
-    lastUploadTime = now;
-    uploadStatus();
-  }
+  if (now - lastStepTime >= 1500) { // ทำงานห่างกันอย่างน้อย 1.5 วินาทีต่อ 1 Request
+    lastStepTime = now;
 
-  // Check commands ทุก 1 วินาที
-  if (now - lastCmdCheckTime >= FIREBASE_CMD_INTERVAL) {
-    lastCmdCheckTime = now;
-    checkCommands();
-  }
-
-  // Sync config ทุก 5 วินาที
-  if (now - lastConfigSync >= 5000) {
-    lastConfigSync = now;
-    checkConfigSync();
+    if (needClearCommand) {
+      needClearCommand = false;
+      String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
+      Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
+    } else {
+      switch (syncStep) {
+        case 0:
+          uploadStatus();       // วินาทีที่ 0, 4.5, 9 ...
+          syncStep = 1;
+          break;
+        case 1:
+          checkCommands();      // วินาทีที่ 1.5, 6, 10.5 ...
+          syncStep = 2;
+          break;
+        case 2:
+          if (now - lastConfigSync >= 10000) { // ซิงค์ config ทุก 10 วินาที
+            lastConfigSync = now;
+            checkConfigSync();
+          } else {
+            uploadStatus();
+          }
+          syncStep = 0;
+          break;
+      }
+    }
   }
 
   // Upload telemetry snapshot ลงประวัติกราฟ ทุก 10 นาที
@@ -651,9 +667,8 @@ void commandCallback(AsyncResult &result) {
       stopZone(zoneIdx);
     }
 
-    // Clear the command after execution
-    String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
+    // Mark for clearing in next round-robin loop (prevents async re-entrancy crash)
+    needClearCommand = true;
   }
 
   // Parse resetAlarm
@@ -670,9 +685,8 @@ void commandCallback(AsyncResult &result) {
     lcdDirty = true;
     beep(100);
 
-    // Clear the command
-    String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
+    // Mark for clearing in next round-robin loop
+    needClearCommand = true;
   }
 }
 

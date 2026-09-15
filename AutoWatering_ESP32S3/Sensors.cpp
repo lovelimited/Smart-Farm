@@ -36,6 +36,7 @@ void IRAM_ATTR flowISR() {
 void initI2C() {
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(100000);
+  Wire.setTimeOut(50); // ป้องกัน I2C bus hang ทำให้เกิด Watchdog Reset
   Serial.println(F("[I2C] Initialized SDA=8 SCL=9"));
 
   // I2C Scanner

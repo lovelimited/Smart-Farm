@@ -63,11 +63,17 @@ void initHardware() {
   Serial.println(F("=== Init Complete ==="));
 }
 
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
 // ================================================================
 //  SETUP
 // ================================================================
 
 void setup() {
+  // ปิด Brownout Detector ป้องกัน ESP32 รีสตาร์ทรัวๆ จากไฟตกชั่วขณะตอนเปิด WiFi / Relay
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   // ตั้ง Buzzer pin
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
