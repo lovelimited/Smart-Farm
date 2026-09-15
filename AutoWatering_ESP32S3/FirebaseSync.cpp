@@ -444,6 +444,8 @@ void syncFirebase() {
   app.loop();
   Database.loop();
 
+  unsigned long now = millis();
+
   // Round-Robin Task Scheduler: ไม่ยิง Request ชนกันใน loop เดียวกัน ป้องกัน SSL/Memory Crash & Panic
   static uint8_t syncStep = 0;
   static unsigned long lastStepTime = 0;
