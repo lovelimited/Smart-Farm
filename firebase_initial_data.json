@@ -1,0 +1,190 @@
+{
+  "devices": {
+    "esp32": {
+      "status": {
+        "online": true,
+        "temperature": 29.5,
+        "humidity": 68.0,
+        "sht30OK": true,
+        "soil": [
+          48.5,
+          52.0,
+          44.2
+        ],
+        "soilRaw": [
+          1850,
+          1720,
+          1980
+        ],
+        "soilError": [
+          false,
+          false,
+          false
+        ],
+        "flow": {
+          "rate": 0.0,
+          "total": 128.5,
+          "session": 0.0
+        },
+        "zones": [
+          {
+            "enabled": true,
+            "mode": 1,
+            "running": false,
+            "manual": false,
+            "alarm": false,
+            "waterUsed": 34.2
+          },
+          {
+            "enabled": true,
+            "mode": 1,
+            "running": false,
+            "manual": false,
+            "alarm": false,
+            "waterUsed": 41.8
+          },
+          {
+            "enabled": true,
+            "mode": 2,
+            "running": false,
+            "manual": false,
+            "alarm": false,
+            "waterUsed": 38.0
+          },
+          {
+            "enabled": false,
+            "mode": 0,
+            "running": false,
+            "manual": false,
+            "alarm": false,
+            "waterUsed": 14.5
+          }
+        ],
+        "time": "11:00:00",
+        "date": "2026-09-15",
+        "hardware": {
+          "lcd": true,
+          "rtc": true,
+          "sht30": true,
+          "sd": true,
+          "wifi": true
+        },
+        "alarm": {
+          "active": false,
+          "type": 0,
+          "zone": -1,
+          "message": ""
+        },
+        "heap": 215420,
+        "uptime": 3600,
+        "fw": "1.0",
+        "lastSync": 1789420000000
+      },
+      "commands": {
+        "manualZone": -1,
+        "manualAction": "none",
+        "manualDuration": 10,
+        "resetAlarm": false,
+        "timestamp": 0
+      },
+      "config": {
+        "configVersion": 1,
+        "z0_enabled": true,
+        "z0_mode": 1,
+        "z0_moistStart": 35,
+        "z0_moistStop": 55,
+        "z0_s0_en": true,
+        "z0_s0_h": 6,
+        "z0_s0_m": 0,
+        "z0_s0_dur": 10,
+        "z0_s0_days": 127,
+        "z1_enabled": true,
+        "z1_mode": 1,
+        "z1_moistStart": 35,
+        "z1_moistStop": 55,
+        "z1_s0_en": true,
+        "z1_s0_h": 7,
+        "z1_s0_m": 30,
+        "z1_s0_dur": 15,
+        "z1_s0_days": 127,
+        "z2_enabled": true,
+        "z2_mode": 2,
+        "z2_moistStart": 40,
+        "z2_moistStop": 60,
+        "z2_s0_en": true,
+        "z2_s0_h": 17,
+        "z2_s0_m": 0,
+        "z2_s0_dur": 12,
+        "z2_s0_days": 127,
+        "z3_enabled": false,
+        "z3_mode": 0,
+        "z3_moistStart": 30,
+        "z3_moistStop": 50,
+        "z3_s0_en": false,
+        "z3_s0_h": 12,
+        "z3_s0_m": 0,
+        "z3_s0_dur": 5,
+        "z3_s0_days": 127
+      },
+      "history": {
+        "-O_init_01": {
+          "time": "06:00",
+          "date": "2026-09-15",
+          "timestamp": 1789400000000,
+          "temperature": 27.2,
+          "humidity": 78.5,
+          "soil": [
+            52.0,
+            56.5,
+            49.0
+          ],
+          "waterTotal": 115.2,
+          "flowRate": 0.0
+        },
+        "-O_init_02": {
+          "time": "08:00",
+          "date": "2026-09-15",
+          "timestamp": 1789407200000,
+          "temperature": 29.8,
+          "humidity": 68.2,
+          "soil": [
+            49.5,
+            53.0,
+            46.2
+          ],
+          "waterTotal": 128.5,
+          "flowRate": 4.2
+        },
+        "-O_init_03": {
+          "time": "10:00",
+          "date": "2026-09-15",
+          "timestamp": 1789414400000,
+          "temperature": 32.1,
+          "humidity": 61.0,
+          "soil": [
+            46.8,
+            50.2,
+            43.5
+          ],
+          "waterTotal": 128.5,
+          "flowRate": 0.0
+        }
+      },
+      "alarmHistory": {
+        "-O_alarm_01": {
+          "active": false,
+          "type": 0,
+          "zone": -1,
+          "message": "ระบบเริ่มทำงานปกติ",
+          "timestamp": "2026-09-15 06:00:00"
+        }
+      },
+      "wifi_config": {
+        "ssid": "",
+        "password": "",
+        "deviceTarget": "esp32_smart_farm",
+        "updatedAt": 1789420000000
+      }
+    }
+  }
+}
