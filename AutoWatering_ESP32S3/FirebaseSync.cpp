@@ -694,6 +694,27 @@ void commandCallback(AsyncResult &result) {
     needClearCommand = true;
   }
 
+  // Parse direct setMode command (0=OFF, 1=MANUAL, 2=AUTO)
+  int smPos = payload.indexOf("\"setMode\":");
+  if (smPos >= 0 && zoneIdx >= 0 && zoneIdx < NUM_ZONES) {
+    int valStart = smPos + 10;
+    while (valStart < (int)payload.length() && payload.charAt(valStart) == ' ') valStart++;
+    int newMode = payload.charAt(valStart) - '0';
+    if (newMode >= 0 && newMode <= 2) {
+      zones[zoneIdx].mode = newMode;
+      Serial.printf("[FIREBASE] Zone %d mode changed to %d (%s)\n", zoneIdx + 1, newMode, newMode == 0 ? "OFF" : (newMode == 1 ? "MANUAL" : "AUTO"));
+      if (newMode == MODE_OFF) {
+        stopZone(zoneIdx);
+      }
+      saveSettings();
+      lcdDirty = true;
+    }
+    if (cmdTimestamp > 0) {
+      lastProcessedCmdTime = cmdTimestamp;
+    }
+    needClearCommand = true;
+  }
+
   // Parse resetAlarm
   int raPos = payload.indexOf("\"resetAlarm\":true");
   if (raPos >= 0) {
@@ -781,7 +802,7 @@ void configCallback(AsyncResult &result) {
     }
     int newVersion = valStr.toInt();
     
-    if (newVersion > lastConfigVersion && lastConfigVersion >= 0) {
+    if (newVersion != lastConfigVersion && newVersion > 0) {
       Serial.printf("[FIREBASE] Config updated (v%d -> v%d), applying...\n", lastConfigVersion, newVersion);
       
       // Parse zone configs from the JSON
@@ -807,6 +828,9 @@ void configCallback(AsyncResult &result) {
             if (c != ' ') valStr2 += c;
           }
           zones[z].mode = valStr2.toInt();
+          if (zones[z].mode == MODE_OFF && zoneState[z].running) {
+            stopZone(z);
+          }
         }
         
         // Parse moisture thresholds

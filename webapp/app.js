@@ -372,11 +372,26 @@ statusRef.on('value', (snapshot) => {
   setConnectionState(true);
   state.lastData = data;
 
-  // Sync zone modes if available from ESP32
+  // Sync zone modes if available from ESP32, respecting recent user interactions (prevent UI bouncing back)
   if (data.zones && Array.isArray(data.zones)) {
     data.zones.forEach((z, i) => {
-      if (typeof z.mode === 'number') {
-        state.zoneModes[i] = z.mode;
+      const lastUserTime = state.lastUserInteraction?.[i] || 0;
+      const isRecentInteraction = (Date.now() - lastUserTime) < 5000;
+
+      if (!isRecentInteraction) {
+        if (typeof z.mode === 'number') {
+          state.zoneModes[i] = z.mode;
+        }
+      } else {
+        // Keep user's active mode selection
+        z.mode = state.zoneModes[i];
+      }
+
+      // If user recently requested Stop / OFF, enforce running = false
+      const lastStopTime = state.lastUserStop?.[i] || 0;
+      if (Date.now() - lastStopTime < 5000) {
+        z.running = false;
+        z.remaining = 0;
       }
     });
   }
@@ -929,7 +944,15 @@ function setZoneMode(zoneIndex, mode) {
     handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
   });
 
-  // If set to OFF, stop the valve immediately if running
+  // Track user interaction time to prevent UI bouncing back
+  state.lastUserInteraction = state.lastUserInteraction || {};
+  state.lastUserInteraction[zoneIndex] = Date.now();
+  if (mode === 0) {
+    state.lastUserStop = state.lastUserStop || {};
+    state.lastUserStop[zoneIndex] = Date.now();
+  }
+
+  // If set to OFF, stop the valve immediately in local UI state
   if (mode === 0) {
     if (state.lastData?.zones?.[zoneIndex]) {
       state.lastData.zones[zoneIndex].running = false;
@@ -937,18 +960,21 @@ function setZoneMode(zoneIndex, mode) {
       renderDashboardZoneCards(state.lastData.zones);
       renderZoneControls(state.lastData);
     }
-    commandRef.set({
-      manualZone: zoneIndex,
-      manualAction: 'stop',
-      manualDuration: 0,
-      timestamp: Date.now(),
-      source: 'web_app_mode_off'
-    }).then(() => {
-      setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
-    }).catch((err) => {
-      handleFirebaseError(err, 'stop_valve_on_off_mode');
-    });
   }
+
+  // Send immediate direct command (with setMode) to ESP32 for instant relay & mode execution
+  commandRef.set({
+    manualZone: zoneIndex,
+    setMode: mode,
+    manualAction: (mode === 0 ? 'stop' : 'none'),
+    manualDuration: 0,
+    timestamp: Date.now(),
+    source: 'web_app_mode_' + mode
+  }).then(() => {
+    setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
+  }).catch((err) => {
+    handleFirebaseError(err, 'stop_valve_on_off_mode');
+  });
 
   Swal.fire({
     toast: true,
@@ -1022,6 +1048,10 @@ function confirmStopZone(zoneIndex) {
     reverseButtons: true,
   }).then((result) => {
     if (result.isConfirmed) {
+      state.lastUserStop = state.lastUserStop || {};
+      state.lastUserStop[zoneIndex] = Date.now();
+      state.lastUserInteraction = state.lastUserInteraction || {};
+      state.lastUserInteraction[zoneIndex] = Date.now();
       sendManualCommand(zoneIndex, 'stop', 0);
       Swal.fire({
         toast: true,
@@ -1037,6 +1067,13 @@ function confirmStopZone(zoneIndex) {
 
 // 3. Send Manual Command to Firebase (with Optimistic UI & graceful permission handling)
 function sendManualCommand(zone, action, duration) {
+  state.lastUserInteraction = state.lastUserInteraction || {};
+  state.lastUserInteraction[zone] = Date.now();
+  if (action === 'stop') {
+    state.lastUserStop = state.lastUserStop || {};
+    state.lastUserStop[zone] = Date.now();
+  }
+
   // Optimistic UI update: update local state immediately
   if (state.lastData && state.lastData.zones && state.lastData.zones[zone]) {
     const zObj = state.lastData.zones[zone];
