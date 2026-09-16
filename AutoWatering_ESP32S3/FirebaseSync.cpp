@@ -329,6 +329,7 @@ void initWiFi() {
   if (activeSSID.length() > 0) {
     Serial.print(F("[WIFI] Connecting to: ")); Serial.println(activeSSID);
     WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_15dBm);  // ลดกระแสกระชากขณะรับส่ง WiFi ป้องกัน Brownout
     WiFi.begin(activeSSID.c_str(), activePass.c_str());
 
     unsigned long startAttempt = millis();

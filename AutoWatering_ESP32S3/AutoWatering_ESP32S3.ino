@@ -66,6 +66,11 @@ void initHardware() {
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
+// ปิด Brownout Detector ตั้งแต่ก่อนเข้า main/setup() ป้องกันรีสตาร์ทจากไฟตกชั่วขณะตอน Boot
+__attribute__((constructor)) void earlyDisableBOD() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+}
+
 // ================================================================
 //  SETUP
 // ================================================================

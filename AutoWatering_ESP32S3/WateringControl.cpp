@@ -10,6 +10,7 @@
 // --- เริ่ม Relay — ทุกช่องต้อง OFF ก่อนเสมอ ---
 void initRelay() {
   for (int i = 0; i < NUM_ZONES; i++) {
+    digitalWrite(relayPins[i], RELAY_OFF);  // preload ค่าตัดไฟก่อนเปลี่ยนขาเป็น OUTPUT ป้องกันกระแสกระชาก
     pinMode(relayPins[i], OUTPUT);
     digitalWrite(relayPins[i], RELAY_OFF);
     zoneState[i].running    = false;
