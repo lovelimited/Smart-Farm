@@ -712,6 +712,43 @@ void commandCallback(AsyncResult &result) {
     }
     needClearCommand = true;
   }
+
+  // Parse syncTime command from WebApp
+  int stPos = payload.indexOf("\"syncTime\":true");
+  if (stPos >= 0) {
+    auto parseIntVal = [&](const String &key) -> int {
+      int p = payload.indexOf(key);
+      if (p < 0) return -1;
+      int s = p + key.length();
+      String v = "";
+      for (int i = s; i < (int)payload.length(); i++) {
+        char c = payload.charAt(i);
+        if (c == ',' || c == '}') break;
+        if (c >= '0' && c <= '9') v += c;
+      }
+      return v.length() > 0 ? v.toInt() : -1;
+    };
+
+    int yr = parseIntVal("\"year\":");
+    int mo = parseIntVal("\"month\":");
+    int dy = parseIntVal("\"day\":");
+    int hr = parseIntVal("\"hour\":");
+    int mn = parseIntVal("\"minute\":");
+    int sc = parseIntVal("\"second\":");
+
+    if (yr >= 2024 && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31 && hr >= 0 && hr <= 23 && mn >= 0 && mn <= 59) {
+      rtc.adjust(DateTime(yr, mo, dy, hr, mn, sc >= 0 ? sc : 0));
+      Serial.printf("[RTC] Synced with WebApp: %04d-%02d-%02d %02d:%02d:%02d\n", yr, mo, dy, hr, mn, sc >= 0 ? sc : 0);
+      updateRTC();
+      lcdDirty = true;
+      beep(80);
+    }
+
+    if (cmdTimestamp > 0) {
+      lastProcessedCmdTime = cmdTimestamp;
+    }
+    needClearCommand = true;
+  }
 }
 
 void checkCommands() {

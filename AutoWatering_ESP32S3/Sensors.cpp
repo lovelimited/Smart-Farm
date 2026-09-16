@@ -55,10 +55,19 @@ void initI2C() {
 void initRTC() {
   if (rtc.begin()) {
     rtcOK = true;
-    if (rtc.lostPower()) {
-      Serial.println(F("[RTC] Lost power, setting compile time"));
+
+    // ตรวจจับการอัปโหลดโค้ดใหม่จากคอมพิวเตอร์ เพื่อซิงค์เวลากับคอมพิวเตอร์ทันที
+    Preferences rtcPrefs;
+    rtcPrefs.begin("rtc_sync", false);
+    String lastCompile = rtcPrefs.getString("build_time", "");
+    String currentCompile = String(__DATE__) + " " + String(__TIME__);
+    if (lastCompile != currentCompile || rtc.lostPower()) {
+      Serial.printf("[RTC] New firmware build (%s) -> Syncing RTC with computer time!\n", currentCompile.c_str());
       rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+      rtcPrefs.putString("build_time", currentCompile);
     }
+    rtcPrefs.end();
+
     DateTime now = rtc.now();
     rtcHour   = now.hour();
     rtcMinute = now.minute();
@@ -67,7 +76,7 @@ void initRTC() {
     rtcMonth  = now.month();
     rtcYear   = now.year();
     rtcDow    = now.dayOfTheWeek();
-    Serial.println(F("[RTC] OK"));
+    Serial.printf("[RTC] OK: %02d:%02d:%02d  %02d/%02d/%04d\n", rtcHour, rtcMinute, rtcSecond, rtcDay, rtcMonth, rtcYear);
   } else {
     rtcOK = false;
     Serial.println(F("[RTC] ERROR — Automatic watering DISABLED"));

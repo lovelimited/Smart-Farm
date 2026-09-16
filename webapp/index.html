@@ -97,7 +97,12 @@
               <span id="connText" class="font-medium">กำลังเชื่อมต่อ...</span>
             </span>
             <span class="text-slate-300">•</span>
-            <span id="clockDisplay" class="font-mono text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60" title="เวลานาฬิกาอุปกรณ์ RTC DS3231">--:--:--</span>
+            <div class="inline-flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
+              <span id="clockDisplay" class="font-mono text-[11px] font-semibold text-emerald-800" title="เวลานาฬิกาอุปกรณ์ RTC DS3231">--:--:--</span>
+              <button type="button" onclick="syncDeviceTime()" class="text-emerald-600 hover:text-emerald-900 transition p-0.5 rounded hover:bg-emerald-100" title="กดเพื่อซิงค์เวลานาฬิกากับเครื่องนี้ทันที">
+                <i class="ti ti-refresh text-xs"></i>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -397,6 +402,19 @@
 
       <!-- Zone Basic Config Card -->
       <div class="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+        <!-- Zone Custom Name Input -->
+        <div class="pb-3 border-b border-slate-100">
+          <label class="font-semibold text-sm text-slate-800 flex items-center justify-between mb-1.5">
+            <span class="flex items-center gap-1.5">
+              <i class="ti ti-tag text-emerald-600"></i> ชื่อโซน / แปลง
+            </span>
+            <span class="text-[11px] font-normal text-slate-400">พิมพ์แก้ไขได้</span>
+          </label>
+          <div class="relative">
+            <input type="text" id="cfgZoneName" class="w-full px-3.5 py-2 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-forest-500 focus:bg-white transition" placeholder="เช่น แปลงผักสลัด, แปลงเมลอน...">
+          </div>
+        </div>
+
         <!-- Enable Zone -->
         <div class="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
@@ -511,6 +529,9 @@
             <span class="text-xl mb-1">⏰</span>
             <span class="text-xs font-semibold text-slate-700">RTC DS3231</span>
             <span id="hwRtcStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
+            <button type="button" onclick="syncDeviceTime()" class="mt-1.5 px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-100/70 hover:bg-emerald-200 rounded-md transition" title="ซิงค์เวลานาฬิกากับเครื่องนี้">
+              <i class="ti ti-refresh text-[10px]"></i> ซิงค์เวลา
+            </button>
           </div>
           <!-- SHT30 -->
           <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">

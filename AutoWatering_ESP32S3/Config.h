@@ -64,8 +64,8 @@
 // ================================================================
 //  SECTION 3: RELAY LOGIC — เปลี่ยนได้ง่ายตรงนี้
 // ================================================================
-#define RELAY_ON   LOW    // Active LOW relay module
-#define RELAY_OFF  HIGH
+#define RELAY_ON   HIGH   // Active HIGH relay module
+#define RELAY_OFF  LOW
 
 // ================================================================
 //  SECTION 4: CONSTANTS

@@ -67,16 +67,182 @@ let state = {
   lastHistoryRecordTime: 0
 };
 
-const ZONE_NAMES = [
+const DEFAULT_ZONE_NAMES = [
   'Zone 1 (แปลงผักสลัด)',
   'Zone 2 (แปลงเมลอน)',
   'Zone 3 (แปลงมะเขือเทศ)',
   'Zone 4 (ระบบพ่นหมอก)'
 ];
-const ZONE_SHORT_NAMES = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4'];
+const DEFAULT_ZONE_SHORT_NAMES = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4'];
+
+// Load customized zone names from localStorage or default
+state.customZoneNames = (() => {
+  try {
+    const saved = localStorage.getItem('verdante_custom_zone_names');
+    if (saved) return JSON.parse(saved);
+  } catch (e) {}
+  return [...DEFAULT_ZONE_NAMES];
+})();
+
+function getZoneName(z) {
+  return state.customZoneNames?.[z] || DEFAULT_ZONE_NAMES[z] || `Zone ${z + 1}`;
+}
+
+function getZoneShortName(z) {
+  if (state.customZoneNames?.[z]) {
+    const n = state.customZoneNames[z];
+    if (n.length <= 16) return n;
+    return n.substring(0, 14) + '...';
+  }
+  return DEFAULT_ZONE_SHORT_NAMES[z] || `Zone ${z + 1}`;
+}
+
+// Transparent Backward Compatibility Proxies
+const ZONE_NAMES = new Proxy(DEFAULT_ZONE_NAMES, {
+  get: (target, prop) => {
+    const idx = parseInt(prop);
+    if (!isNaN(idx) && idx >= 0 && idx < 4) {
+      return getZoneName(idx);
+    }
+    return target[prop];
+  }
+});
+
+const ZONE_SHORT_NAMES = new Proxy(DEFAULT_ZONE_SHORT_NAMES, {
+  get: (target, prop) => {
+    const idx = parseInt(prop);
+    if (!isNaN(idx) && idx >= 0 && idx < 4) {
+      return getZoneShortName(idx);
+    }
+    return target[prop];
+  }
+});
+
+function updateScheduleTabZoneButtons() {
+  document.querySelectorAll('#schedZoneSelector button').forEach((btn) => {
+    const z = parseInt(btn.dataset.zone);
+    if (!isNaN(z)) {
+      btn.textContent = getZoneShortName(z);
+    }
+  });
+}
+
+function promptRenameZone(z) {
+  Swal.fire({
+    title: `แก้ไขชื่อ ${DEFAULT_ZONE_SHORT_NAMES[z]}`,
+    text: 'พิมพ์ชื่อแปลงที่ต้องการ (เช่น แปลงผักสลัด, แปลงไฮโดรโปนิกส์):',
+    input: 'text',
+    inputValue: getZoneName(z),
+    showCancelButton: true,
+    confirmButtonText: 'บันทึกชื่อแปลง',
+    cancelButtonText: 'ยกเลิก',
+    confirmButtonColor: '#15803D',
+    cancelButtonColor: '#94A3B8',
+    preConfirm: (name) => {
+      if (!name || !name.trim()) {
+        Swal.showValidationMessage('กรุณากรอกชื่อแปลง');
+      }
+      return name.trim();
+    }
+  }).then((res) => {
+    if (res.isConfirmed && res.value) {
+      saveCustomZoneName(z, res.value, true);
+    }
+  });
+}
+
+function saveCustomZoneName(z, newName, showToast = true) {
+  if (!state.customZoneNames) state.customZoneNames = [...DEFAULT_ZONE_NAMES];
+  state.customZoneNames[z] = newName;
+  try {
+    localStorage.setItem('verdante_custom_zone_names', JSON.stringify(state.customZoneNames));
+  } catch (e) {}
+
+  // Sync to Firebase RTDB
+  db.ref(`devices/esp32/customZoneNames/${z}`).set(newName).catch(() => {});
+
+  // Update UI immediately
+  renderDashboardZoneCards(state.lastData?.zones || []);
+  renderZoneControls(state.lastData);
+  updateScheduleTabZoneButtons();
+  const nameInput = document.getElementById('cfgZoneName');
+  if (nameInput && state.selectedZone === z) {
+    nameInput.value = newName;
+  }
+
+  if (showToast) {
+    Swal.fire({
+      toast: true,
+      position: 'top',
+      icon: 'success',
+      title: `เปลี่ยนชื่อเป็น "${newName}" เรียบร้อย 🌿`,
+      showConfirmButton: false,
+      timer: 2000
+    });
+  }
+}
+
+function syncDeviceTime() {
+  const now = new Date();
+  const timeFormatted = now.toLocaleTimeString('th-TH');
+  const dateFormatted = now.toLocaleDateString('th-TH');
+  Swal.fire({
+    title: 'ซิงค์เวลากับเครื่องนี้?',
+    text: `ต้องการตั้งนาฬิกา RTC DS3231 ของ ESP32 ให้ตรงกับเวลานี้: ${timeFormatted} (${dateFormatted}) หรือไม่?`,
+    icon: 'question',
+    showCancelButton: true,
+    confirmButtonText: 'ยืนยันซิงค์เวลา',
+    cancelButtonText: 'ยกเลิก',
+    confirmButtonColor: '#15803D',
+    cancelButtonColor: '#94A3B8',
+  }).then((res) => {
+    if (res.isConfirmed) {
+      commandRef.set({
+        syncTime: true,
+        year: now.getFullYear(),
+        month: now.getMonth() + 1,
+        day: now.getDate(),
+        hour: now.getHours(),
+        minute: now.getMinutes(),
+        second: now.getSeconds(),
+        timestamp: Date.now(),
+        source: 'web_app_timesync'
+      }).then(() => {
+        setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
+        Swal.fire({
+          toast: true,
+          position: 'top',
+          icon: 'success',
+          title: `ส่งคำสั่งซิงค์เวลา ${timeFormatted} สำเร็จ ⏱️`,
+          showConfirmButton: false,
+          timer: 2500
+        });
+      }).catch((err) => {
+        handleFirebaseError(err, 'syncDeviceTime');
+      });
+    }
+  });
+}
+
+// 1-second real-time clock ticker
+setInterval(() => {
+  if (typeof state.lastRtcSeconds === 'number') {
+    state.lastRtcSeconds = (state.lastRtcSeconds + 1) % 86400;
+    const h = Math.floor(state.lastRtcSeconds / 3600);
+    const m = Math.floor((state.lastRtcSeconds % 3600) / 60);
+    const s = state.lastRtcSeconds % 60;
+    const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    const clockEl = document.getElementById('clockDisplay');
+    if (clockEl) clockEl.textContent = timeStr;
+    const dashTimeEl = document.getElementById('dashDeviceTime');
+    if (dashTimeEl) dashTimeEl.textContent = timeStr;
+  }
+}, 1000);
+
 const ZONE_COLORS = ['#10b981', '#0d9488', '#16a34a', '#0284c7'];
 const MODE_NAMES = ['OFF', 'MANUAL', 'AUTO'];
 const DAY_LABELS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+
 
 // Simulated / Discovered WiFi networks
 const NEARBY_WIFI_NETWORKS = [
@@ -245,7 +411,27 @@ db.ref('.info/connected').on('value', (snap) => {
   }
 });
 
-// 3. Listen for Config changes
+// 3. Listen for Custom Zone Names
+db.ref('devices/esp32/customZoneNames').on('value', (snapshot) => {
+  const names = snapshot.val();
+  if (names) {
+    for (let i = 0; i < 4; i++) {
+      if (names[i]) state.customZoneNames[i] = names[i];
+    }
+    try {
+      localStorage.setItem('verdante_custom_zone_names', JSON.stringify(state.customZoneNames));
+    } catch (e) {}
+    renderDashboardZoneCards(state.lastData?.zones || []);
+    renderZoneControls(state.lastData);
+    updateScheduleTabZoneButtons();
+    const nameInput = document.getElementById('cfgZoneName');
+    if (nameInput && state.selectedZone !== undefined) {
+      nameInput.value = getZoneName(state.selectedZone);
+    }
+  }
+});
+
+// 4. Listen for Config changes
 configRef.on('value', (snapshot) => {
   const data = snapshot.val();
   if (data) {
@@ -347,6 +533,10 @@ function renderDashboard(data) {
 
   // Clock & Date (from RTC DS3231)
   if (data.time) {
+    const parts = data.time.split(':').map(Number);
+    if (parts.length === 3 && !isNaN(parts[0])) {
+      state.lastRtcSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
     const clockEl = document.getElementById('clockDisplay');
     if (clockEl) clockEl.textContent = data.time;
     const dashTimeEl = document.getElementById('dashDeviceTime');
@@ -488,7 +678,12 @@ function renderDashboardZoneCards(zones) {
     card.innerHTML = `
       <div>
         <div class="flex items-center justify-between mb-1.5">
-          <span class="text-xs font-bold text-slate-800">${ZONE_SHORT_NAMES[z]}</span>
+          <div class="flex items-center gap-1 mr-1 min-w-0">
+            <span class="text-xs font-bold text-slate-800 truncate" title="${getZoneName(z)}">${getZoneShortName(z)}</span>
+            <button type="button" onclick="promptRenameZone(${z})" class="text-slate-300 hover:text-emerald-700 p-0.5 rounded transition shrink-0" title="เปลี่ยนชื่อแปลง">
+              <i class="ti ti-edit text-[10px]"></i>
+            </button>
+          </div>
           ${statusBadge}
         </div>
         <div class="text-[11px] text-slate-500">ใช้น้ำ: <b class="text-slate-700 font-mono">${(zone.waterUsed ?? 0).toFixed(2)}</b> L</div>
@@ -598,8 +793,13 @@ function renderZoneControls(data) {
           <div class="w-9 h-9 rounded-xl ${isRunning ? 'bg-emerald-600 text-white animate-bounce' : 'bg-forest-100 text-forest-700'} flex items-center justify-center">
             <i class="ti ti-droplet text-xl"></i>
           </div>
-          <div>
-            <h4 class="font-bold text-sm text-slate-900">${ZONE_NAMES[z]}</h4>
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <h4 class="font-bold text-sm text-slate-900 truncate" title="${getZoneName(z)}">${getZoneName(z)}</h4>
+              <button type="button" onclick="promptRenameZone(${z})" class="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition shrink-0" title="เปลี่ยนชื่อแปลงนี้">
+                <i class="ti ti-edit text-xs"></i>
+              </button>
+            </div>
             <span class="text-[11px] text-slate-400 font-medium">โหมดปัจจุบัน: <b>${MODE_NAMES[currentMode]}</b></span>
           </div>
         </div>
@@ -882,6 +1082,7 @@ document.querySelectorAll('#schedZoneSelector button').forEach(btn => {
 });
 
 function renderScheduleSettings() {
+  updateScheduleTabZoneButtons();
   const z = state.selectedZone;
   const cfg = state.configData?.zones?.[z] || {
     enabled: true,
@@ -891,12 +1092,14 @@ function renderScheduleSettings() {
   };
 
   // Inputs
+  const nameInput = document.getElementById('cfgZoneName');
   const enabledInput = document.getElementById('cfgZoneEnabled');
   const modeInput = document.getElementById('cfgZoneMode');
   const moistBox = document.getElementById('smartMoistureBox');
   const moistStartInput = document.getElementById('cfgMoistStart');
   const moistStopInput = document.getElementById('cfgMoistStop');
 
+  if (nameInput) nameInput.value = getZoneName(z);
   if (enabledInput) enabledInput.checked = !!cfg.enabled;
   if (modeInput) modeInput.value = state.zoneModes[z] ?? (cfg.mode ?? 1);
   if (moistStartInput) moistStartInput.value = cfg.moistureStart ?? 35;
@@ -1229,6 +1432,12 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
     moistureStop: moistureStop,
     schedules: schedulesToSave
   };
+
+  // Save custom zone name if edited in input field
+  const typedName = document.getElementById('cfgZoneName')?.value.trim();
+  if (typedName && typedName !== getZoneName(z)) {
+    saveCustomZoneName(z, typedName, false);
+  }
 
   // Update memory state
   state.zoneModes[z] = mode;
