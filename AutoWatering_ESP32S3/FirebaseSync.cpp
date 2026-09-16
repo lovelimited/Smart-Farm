@@ -3,6 +3,7 @@
 #include "WateringControl.h"
 #include "BuzzerAlarm.h"
 #include "Storage.h"
+#include "Sensors.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
