@@ -3,6 +3,9 @@
 
 #include <Arduino.h>
 #include "Config.h"
+#include "Sensors.h"
+
+void updateRTC();
 
 // ================================================================
 //  FIREBASE SYNC MODULE INTERFACES
