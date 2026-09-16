@@ -58,14 +58,14 @@
 // --- Firebase Realtime Database ---
 #define FIREBASE_API_KEY    "AIzaSyBMKH9oG2DbhSZtIsN9d7iRfryHRkiUqRE"
 #define FIREBASE_DB_URL     "https://smart-farm-esp32-5e482-default-rtdb.asia-southeast1.firebasedatabase.app"
-#define FIREBASE_SYNC_INTERVAL  3000  // ms ส่งข้อมูลทุก 3 วินาที
-#define FIREBASE_CMD_INTERVAL   2000  // ms รับคำสั่งทุก 2 วินาที
+#define FIREBASE_SYNC_INTERVAL  2500  // ms ส่งข้อมูลทุก 2.5 วินาที
+#define FIREBASE_CMD_INTERVAL   1000  // ms รับคำสั่งทุก 1 วินาที (ตอบสนองคำสั่งเปิด-ปิดทันใจ)
 
 // ================================================================
 //  SECTION 3: RELAY LOGIC — เปลี่ยนได้ง่ายตรงนี้
 // ================================================================
-#define RELAY_ON   LOW    // Active LOW relay module (LOW = ON, HIGH = OFF)
-#define RELAY_OFF  HIGH
+#define RELAY_ON   HIGH   // Active HIGH relay module
+#define RELAY_OFF  LOW
 
 // ================================================================
 //  SECTION 4: CONSTANTS

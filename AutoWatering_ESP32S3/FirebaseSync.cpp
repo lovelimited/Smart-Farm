@@ -682,36 +682,39 @@ void commandCallback(AsyncResult &result) {
       unsigned long durMs = (unsigned long)duration * 60UL * 1000UL;
       startZone(zoneIdx, durMs);
       zoneState[zoneIdx].manual = true;
+      lastUploadTime = 0; // Trigger immediate status upload!
     } else if (action == "stop") {
       Serial.printf("[FIREBASE] Manual STOP Z%d\n", zoneIdx + 1);
       stopZone(zoneIdx);
+      lastUploadTime = 0; // Trigger immediate status upload!
+    }
+
+    // Parse optional setMode in command (e.g. when user clicks OFF or changes mode)
+    int smPos = payload.indexOf("\"setMode\":");
+    if (smPos >= 0) {
+      int valStart = smPos + 10;
+      String smStr = "";
+      for (int i = valStart; i < (int)payload.length(); i++) {
+        char c = payload.charAt(i);
+        if (c == ',' || c == '}') break;
+        if (c >= '0' && c <= '9') smStr += c;
+      }
+      if (smStr.length() > 0) {
+        int newMode = smStr.toInt();
+        zones[zoneIdx].mode = newMode;
+        Serial.printf("[FIREBASE] Z%d mode changed to %d via command\n", zoneIdx + 1, newMode);
+        if (newMode == MODE_OFF) {
+          stopZone(zoneIdx);
+        }
+        lastUploadTime = 0;
+        lcdDirty = true;
+      }
     }
 
     if (cmdTimestamp > 0) {
       lastProcessedCmdTime = cmdTimestamp;
     }
     // Mark to clear outside callback in syncFirebase() to prevent re-entrancy
-    needClearCommand = true;
-  }
-
-  // Parse direct setMode command (0=OFF, 1=MANUAL, 2=AUTO)
-  int smPos = payload.indexOf("\"setMode\":");
-  if (smPos >= 0 && zoneIdx >= 0 && zoneIdx < NUM_ZONES) {
-    int valStart = smPos + 10;
-    while (valStart < (int)payload.length() && payload.charAt(valStart) == ' ') valStart++;
-    int newMode = payload.charAt(valStart) - '0';
-    if (newMode >= 0 && newMode <= 2) {
-      zones[zoneIdx].mode = newMode;
-      Serial.printf("[FIREBASE] Zone %d mode changed to %d (%s)\n", zoneIdx + 1, newMode, newMode == 0 ? "OFF" : (newMode == 1 ? "MANUAL" : "AUTO"));
-      if (newMode == MODE_OFF) {
-        stopZone(zoneIdx);
-      }
-      saveSettings();
-      lcdDirty = true;
-    }
-    if (cmdTimestamp > 0) {
-      lastProcessedCmdTime = cmdTimestamp;
-    }
     needClearCommand = true;
   }
 
@@ -802,7 +805,7 @@ void configCallback(AsyncResult &result) {
     }
     int newVersion = valStr.toInt();
     
-    if (newVersion != lastConfigVersion && newVersion > 0) {
+    if (newVersion > lastConfigVersion || lastConfigVersion == -1) {
       Serial.printf("[FIREBASE] Config updated (v%d -> v%d), applying...\n", lastConfigVersion, newVersion);
       
       // Parse zone configs from the JSON
@@ -827,9 +830,13 @@ void configCallback(AsyncResult &result) {
             if (c == ',' || c == '}') break;
             if (c != ' ') valStr2 += c;
           }
-          zones[z].mode = valStr2.toInt();
-          if (zones[z].mode == MODE_OFF && zoneState[z].running) {
+          int newMode = valStr2.toInt();
+          zones[z].mode = newMode;
+          // If mode is OFF, immediately stop relay if running
+          if (newMode == MODE_OFF && zoneState[z].running) {
+            Serial.printf("[FIREBASE] Z%d set to OFF, stopping relay immediately\n", z + 1);
             stopZone(z);
+            lastUploadTime = 0;
           }
         }
         

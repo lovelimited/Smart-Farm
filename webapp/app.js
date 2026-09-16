@@ -372,26 +372,31 @@ statusRef.on('value', (snapshot) => {
   setConnectionState(true);
   state.lastData = data;
 
-  // Sync zone modes if available from ESP32, respecting recent user interactions (prevent UI bouncing back)
+  // Sync zone modes if available from ESP32 (guard against UI bouncing back while command/config is pending)
   if (data.zones && Array.isArray(data.zones)) {
     data.zones.forEach((z, i) => {
-      const lastUserTime = state.lastUserInteraction?.[i] || 0;
-      const isRecentInteraction = (Date.now() - lastUserTime) < 5000;
-
-      if (!isRecentInteraction) {
-        if (typeof z.mode === 'number') {
+      if (typeof z.mode === 'number') {
+        const pending = state.pendingModeChanges?.[i];
+        if (pending && (Date.now() - pending.timestamp < 8000)) {
+          if (z.mode === pending.mode) {
+            delete state.pendingModeChanges[i];
+            state.zoneModes[i] = z.mode;
+          }
+          // Preserve user-selected mode during pending window
+        } else {
           state.zoneModes[i] = z.mode;
         }
-      } else {
-        // Keep user's active mode selection
-        z.mode = state.zoneModes[i];
       }
 
-      // If user recently requested Stop / OFF, enforce running = false
-      const lastStopTime = state.lastUserStop?.[i] || 0;
-      if (Date.now() - lastStopTime < 5000) {
-        z.running = false;
-        z.remaining = 0;
+      // If user recently clicked stop, don't let stale running=true snap back!
+      const pendingStop = state.pendingStopActions?.[i];
+      if (pendingStop && (Date.now() - pendingStop < 6000)) {
+        if (!z.running) {
+          delete state.pendingStopActions[i];
+        } else {
+          z.running = false;
+          z.remaining = 0;
+        }
       }
     });
   }
@@ -913,6 +918,8 @@ function renderZoneControls(data) {
 // 3-Mode Zone Switcher [ OFF=0, MANUAL=1, AUTO=2 ]
 function setZoneMode(zoneIndex, mode) {
   state.zoneModes[zoneIndex] = mode;
+  state.pendingModeChanges = state.pendingModeChanges || {};
+  state.pendingModeChanges[zoneIndex] = { mode: mode, timestamp: Date.now() };
 
   // Sync with schedule settings page if this zone is currently viewed
   if (state.selectedZone === zoneIndex) {
@@ -944,15 +951,7 @@ function setZoneMode(zoneIndex, mode) {
     handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
   });
 
-  // Track user interaction time to prevent UI bouncing back
-  state.lastUserInteraction = state.lastUserInteraction || {};
-  state.lastUserInteraction[zoneIndex] = Date.now();
-  if (mode === 0) {
-    state.lastUserStop = state.lastUserStop || {};
-    state.lastUserStop[zoneIndex] = Date.now();
-  }
-
-  // If set to OFF, stop the valve immediately in local UI state
+  // If set to OFF, stop the valve immediately if running and send direct command to ESP32
   if (mode === 0) {
     if (state.lastData?.zones?.[zoneIndex]) {
       state.lastData.zones[zoneIndex].running = false;
@@ -960,21 +959,30 @@ function setZoneMode(zoneIndex, mode) {
       renderDashboardZoneCards(state.lastData.zones);
       renderZoneControls(state.lastData);
     }
-  }
+    state.pendingStopActions = state.pendingStopActions || {};
+    state.pendingStopActions[zoneIndex] = Date.now();
 
-  // Send immediate direct command (with setMode) to ESP32 for instant relay & mode execution
-  commandRef.set({
-    manualZone: zoneIndex,
-    setMode: mode,
-    manualAction: (mode === 0 ? 'stop' : 'none'),
-    manualDuration: 0,
-    timestamp: Date.now(),
-    source: 'web_app_mode_' + mode
-  }).then(() => {
-    setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
-  }).catch((err) => {
-    handleFirebaseError(err, 'stop_valve_on_off_mode');
-  });
+    commandRef.set({
+      manualZone: zoneIndex,
+      manualAction: 'stop',
+      setMode: 0,
+      manualDuration: 0,
+      timestamp: Date.now(),
+      source: 'web_app_mode_off'
+    }).catch((err) => {
+      handleFirebaseError(err, 'stop_valve_on_off_mode');
+    });
+  } else {
+    // Send mode change command directly to ESP32 for immediate response
+    commandRef.set({
+      manualZone: zoneIndex,
+      manualAction: 'none',
+      setMode: mode,
+      manualDuration: 0,
+      timestamp: Date.now(),
+      source: 'web_app_mode_change'
+    }).catch(() => {});
+  }
 
   Swal.fire({
     toast: true,
@@ -1048,10 +1056,6 @@ function confirmStopZone(zoneIndex) {
     reverseButtons: true,
   }).then((result) => {
     if (result.isConfirmed) {
-      state.lastUserStop = state.lastUserStop || {};
-      state.lastUserStop[zoneIndex] = Date.now();
-      state.lastUserInteraction = state.lastUserInteraction || {};
-      state.lastUserInteraction[zoneIndex] = Date.now();
       sendManualCommand(zoneIndex, 'stop', 0);
       Swal.fire({
         toast: true,
@@ -1067,13 +1071,6 @@ function confirmStopZone(zoneIndex) {
 
 // 3. Send Manual Command to Firebase (with Optimistic UI & graceful permission handling)
 function sendManualCommand(zone, action, duration) {
-  state.lastUserInteraction = state.lastUserInteraction || {};
-  state.lastUserInteraction[zone] = Date.now();
-  if (action === 'stop') {
-    state.lastUserStop = state.lastUserStop || {};
-    state.lastUserStop[zone] = Date.now();
-  }
-
   // Optimistic UI update: update local state immediately
   if (state.lastData && state.lastData.zones && state.lastData.zones[zone]) {
     const zObj = state.lastData.zones[zone];
@@ -1089,14 +1086,17 @@ function sendManualCommand(zone, action, duration) {
     renderZoneControls(state.lastData);
   }
 
+  if (action === 'stop') {
+    state.pendingStopActions = state.pendingStopActions || {};
+    state.pendingStopActions[zone] = Date.now();
+  }
+
   commandRef.set({
     manualZone: zone,
     manualAction: action,
     manualDuration: duration,
     timestamp: Date.now(),
     source: 'web_app'
-  }).then(() => {
-    setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
   }).catch((err) => {
     handleFirebaseError(err, `sendManualCommand(${zone}, ${action})`);
   });
@@ -1489,14 +1489,16 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
       renderDashboardZoneCards(state.lastData.zones);
       renderZoneControls(state.lastData);
     }
+    state.pendingStopActions = state.pendingStopActions || {};
+    state.pendingStopActions[z] = Date.now();
+
     commandRef.set({
       manualZone: z,
       manualAction: 'stop',
+      setMode: 0,
       manualDuration: 0,
       timestamp: Date.now(),
       source: 'web_app_mode_off_save'
-    }).then(() => {
-      setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
     }).catch((err) => {
       handleFirebaseError(err, 'stop_valve_on_save_config');
     });
