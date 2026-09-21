@@ -1,8 +1,8 @@
 // ================================================================
-//  🌿 Verdante Smart Farm — Service Worker (PWA Offline Caching)
+//  Verdante Smart Farm — Service Worker (PWA Offline Caching)
 // ================================================================
 
-const CACHE_NAME = 'verdante-pwa-v5';
+const CACHE_NAME = 'verdante-pwa-v6';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

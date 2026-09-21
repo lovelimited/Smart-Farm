@@ -1,5 +1,5 @@
 /* ================================================================
-   🌿 Verdante Smart Farm — Auto Watering & Monitoring System
+   Verdante Smart Farm — Auto Watering & Monitoring System
    Firebase Realtime Database + Tailwind + Chart.js + SweetAlert2
    ================================================================ */
 

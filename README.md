@@ -1,4 +1,4 @@
-# 🌿 Verdante Smart Farm — ระบบฟาร์มอัจฉริยะ ESP32-S3
+# Verdante Smart Farm — ระบบฟาร์มอัจฉริยะ ESP32-S3
 
 ระบบควบคุมการรดน้ำอัตโนมัติ 4 โซนและตรวจสอบสภาพแวดล้อมสำหรับแปลงเกษตรอัจฉริยะ ทำงานร่วมกันระหว่างฮาร์ดแวร์ **ESP32-S3** และเว็บแอปพลิเคชัน **Verdante Smart Farm** (Mobile-first Web App) ผ่าน **Firebase Realtime Database** แบบสองทิศทาง
 
