@@ -200,49 +200,89 @@ function switchTab(tabId) {
 //  FIREBASE REALTIME LISTENERS
 // ================================================================
 
-// 1. Listen for device status with Stale Detection
+// Track server time offset from Firebase for accurate real-time clock and age calculations
+let serverTimeOffset = 0;
+db.ref('.info/serverTimeOffset').on('value', (snap) => {
+  serverTimeOffset = snap.val() || 0;
+});
+
+// Maximum allowed silence from ESP32 before declaring it offline (ESP32 transmits every 2000ms)
+const HEARTBEAT_TIMEOUT_MS = 5000;
+
+// 1. Listen for device status with Stale & Live Detection
 statusRef.on('value', (snapshot) => {
   const data = snapshot.val();
   if (!data) {
     setConnectionState(false);
+    clearDashboardLiveValues();
     return;
   }
 
   state.receivedCount = (state.receivedCount || 0) + 1;
-  state.lastReceivedAt = Date.now();
+  const now = Date.now();
+  const currentServerTime = now + serverTimeOffset;
+
+  // Determine age of data in snapshot
+  let dataAgeMs = null;
+  if (typeof data.ts === 'number') {
+    dataAgeMs = currentServerTime - data.ts;
+  } else if (data.date && data.time) {
+    const timeStr = data.time.length === 5 ? data.time + ':00' : data.time;
+    const espTime = Date.parse(`${data.date}T${timeStr}+07:00`) || Date.parse(`${data.date} ${data.time}`);
+    if (!isNaN(espTime) && espTime > 1704067200000) { // after 2024-01-01
+      dataAgeMs = currentServerTime - espTime;
+    }
+  }
+
+  // Check if this initial snapshot is stale (e.g. from an ESP32 turned off earlier)
+  if (state.receivedCount === 1) {
+    const isStale = (dataAgeMs !== null && dataAgeMs > 6000);
+    if (isStale) {
+      console.warn(`[Stale Detection] Initial snapshot is ${Math.round(dataAgeMs / 1000)}s old. ESP32 is OFFLINE.`);
+      state.lastData = data;
+      setConnectionState(false);
+      clearDashboardLiveValues();
+      renderDashboard(data);
+      renderZoneControls(data);
+      renderAlarmPage(data);
+      return;
+    }
+
+    // If age cannot be determined, wait 3.5s for a second heartbeat before confirming offline
+    if (dataAgeMs === null) {
+      setTimeout(() => {
+        if (state.receivedCount <= 1 && state.connected) {
+          console.warn('[Stale Detection] No second heartbeat within 3.5s. Marking OFFLINE.');
+          setConnectionState(false);
+          clearDashboardLiveValues();
+        }
+      }, 3500);
+    }
+  }
+
+  // Active fresh packet from ESP32
+  state.lastReceivedAt = now;
+  state.lastHeartbeatAt = now;
   state.lastData = data;
+  setConnectionState(true);
 
   // Stale check and RTC calibration from ESP32
   if (data.date && data.time) {
     const timeStr = data.time.length === 5 ? data.time + ':00' : data.time;
     const espTime = Date.parse(`${data.date}T${timeStr}+07:00`) || Date.parse(`${data.date} ${data.time}`);
     if (!isNaN(espTime)) {
-      const timeDiff = Math.abs(Date.now() - espTime);
-      state.rtcOffset = espTime - Date.now();
+      const timeDiff = Math.abs(currentServerTime - espTime);
+      state.rtcOffset = espTime - currentServerTime;
       state.rtcDate = data.date;
 
-      // Auto-sync time if ESP32 clock drifted by more than 15 seconds
-      if (timeDiff > 15000 && !state.hasAutoSyncedTime) {
+      // Auto-sync time if ESP32 clock drifted by more than 15 seconds (only when actively online)
+      if (timeDiff > 15000 && !state.hasAutoSyncedTime && state.connected && state.receivedCount >= 2) {
         state.hasAutoSyncedTime = true;
         console.log(`[Time Sync] ESP32 clock drifted by ${(timeDiff / 1000).toFixed(0)}s. Auto-syncing with Thailand time...`);
         syncTimeToEsp32(true);
       }
-
-      if (timeDiff > 180000 && state.receivedCount <= 1 && !state.hasAutoSyncedTime) {
-        // Data is older than 3 minutes -> likely offline from a previous run
-        console.warn('[Stale Detection] Initial snapshot is old (' + data.date + ' ' + data.time + '), waiting for fresh update...');
-        // Wait 6 seconds for a second heartbeat; if not, mark offline
-        setTimeout(() => {
-          if (state.receivedCount <= 1) {
-            setConnectionState(false);
-            clearDashboardLiveValues();
-          }
-        }, 6000);
-      }
     }
   }
-
-  setConnectionState(true);
 
   // Sync zone modes if available from ESP32
   if (data.zones && Array.isArray(data.zones)) {
@@ -263,16 +303,18 @@ statusRef.on('value', (snapshot) => {
   clearDashboardLiveValues();
 });
 
-// Periodic Stale Check (Checks if ESP32 stopped uploading for > 20 seconds)
+// Periodic Heartbeat Watchdog (Checks every 1s if ESP32 stopped uploading for > 5s)
 setInterval(() => {
-  if (state.lastReceivedAt && (Date.now() - state.lastReceivedAt > 20000)) {
-    if (state.connected) {
-      console.warn('[Stale Detection] No updates received for 20s. Marking ESP32 offline.');
+  if (state.connected) {
+    const lastActive = state.lastHeartbeatAt || state.lastReceivedAt || 0;
+    const elapsed = Date.now() - lastActive;
+    if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+      console.warn(`[Watchdog] No updates received from ESP32 for ${(elapsed / 1000).toFixed(1)}s. Marking OFFLINE.`);
       setConnectionState(false);
       clearDashboardLiveValues();
     }
   }
-}, 4000);
+}, 1000);
 
 // Helper to clear dashboard metrics when ESP32 is powered off or disconnected
 function clearDashboardLiveValues() {
@@ -408,6 +450,7 @@ function setConnectionState(connected) {
   const dot = document.getElementById('connDot');
   const text = document.getElementById('connText');
   const banner = document.getElementById('offlineBanner');
+  const bannerText = document.getElementById('offlineBannerText');
 
   if (connected) {
     dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
@@ -418,7 +461,12 @@ function setConnectionState(connected) {
     dot.className = 'w-2 h-2 rounded-full bg-slate-300';
     text.textContent = 'ออฟไลน์';
     text.className = 'font-medium text-slate-500';
-    if (banner) banner.classList.remove('hidden');
+    if (banner) {
+      banner.classList.remove('hidden');
+      if (bannerText) {
+        bannerText.textContent = state.lastData ? 'อุปกรณ์ ESP32 ออฟไลน์ (ปิดเครื่องหรือสัญญาณขาดหาย)' : 'ยังไม่พบการเชื่อมต่อกับอุปกรณ์ ESP32';
+      }
+    }
   }
 }
 
