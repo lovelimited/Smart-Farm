@@ -97,12 +97,12 @@
               <span id="connText" class="font-medium">กำลังเชื่อมต่อ...</span>
             </span>
             <span class="text-slate-300">•</span>
-            <div class="inline-flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
-              <span id="clockDisplay" class="font-mono text-[11px] font-semibold text-emerald-800" title="เวลานาฬิกาอุปกรณ์ RTC DS3231">--:--:--</span>
-              <button type="button" onclick="syncDeviceTime()" class="text-emerald-600 hover:text-emerald-900 transition p-0.5 rounded hover:bg-emerald-100" title="กดเพื่อซิงค์เวลานาฬิกากับเครื่องนี้ทันที">
-                <i class="ti ti-refresh text-xs"></i>
-              </button>
-            </div>
+            <span id="dateDisplay" class="font-medium text-[11px] text-slate-500"></span>
+            <span id="clockDisplay" class="font-mono text-[11px] text-slate-600 font-semibold">--:--:--</span>
+            <button id="btnSyncTime" onclick="syncTimeToEsp32()" class="p-0.5 px-1.5 rounded-md text-[11px] text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 border border-slate-200/60 transition inline-flex items-center gap-1 cursor-pointer" title="ซิงค์เวลากับเครื่องคอมพิวเตอร์/เวลามาตรฐานประเทศไทย (UTC+7)">
+              <i class="ti ti-refresh text-xs" aria-hidden="true"></i>
+              <span class="hidden sm:inline text-[10px] font-medium">ซิงค์เวลา</span>
+            </button>
           </div>
         </div>
       </div>
@@ -172,7 +172,7 @@
         </div>
         <div class="relative z-10">
           <div class="flex items-center justify-between text-xs text-forest-200 mb-1">
-            <span class="flex items-center gap-1.5"><i class="ti ti-clock text-emerald-300"></i> เวลาอุปกรณ์: <b id="dashDeviceTime" class="font-mono text-white tracking-wider">--:--:--</b> <span id="dashDeviceDate" class="text-[11px] text-forest-200">(--/--/----)</span></span>
+            <span class="flex items-center gap-1"><i class="ti ti-shield-check"></i> ระบบรดน้ำอัจฉริยะ</span>
             <span class="bg-forest-600/60 px-2 py-0.5 rounded-full text-[11px]" id="fwBadge">FW v1.0</span>
           </div>
           <h2 class="text-xl font-bold tracking-tight text-white">ภาพรวมระบบฟาร์ม</h2>
@@ -203,10 +203,10 @@
           </div>
           <div class="mt-3">
             <div class="text-2xl font-bold text-slate-800 font-mono">
-              <span id="valTemp">--.-</span><span class="text-sm font-normal text-slate-400 ml-0.5">°C</span>
+              <span id="valTemp">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">°C</small>
             </div>
-            <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
-              <div class="bg-amber-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%" id="barTemp"></div>
+            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
+              <div id="barTemp" class="bg-amber-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
         </div>
@@ -214,32 +214,34 @@
         <!-- Humidity -->
         <div class="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col justify-between">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-medium text-slate-500">ความชื้นสัมพัทธ์</span>
+            <span class="text-xs font-medium text-slate-500">ความชื้นอากาศ</span>
             <div class="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
               <i class="ti ti-droplet-half-2 text-lg"></i>
             </div>
           </div>
           <div class="mt-3">
             <div class="text-2xl font-bold text-slate-800 font-mono">
-              <span id="valHumid">--.-</span><span class="text-sm font-normal text-slate-400 ml-0.5">%</span>
+              <span id="valHumid">--</span><small class="text-sm font-normal text-slate-500 ml-0.5">%</small>
             </div>
-            <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
-              <div class="bg-sky-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%" id="barHumid"></div>
+            <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2.5">
+              <div id="barHumid" class="bg-sky-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Soil Moisture Section -->
+      <!-- Soil Moisture Section (Zones 1-3 only, Zone 4 is drip irrigation) -->
       <div class="bg-white rounded-3xl p-4 border border-slate-200/80 shadow-xs">
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
             <div class="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
               <i class="ti ti-seeding text-base"></i>
             </div>
-            <h3 class="font-bold text-sm text-slate-800">ความชื้นในดิน (Soil Moisture)</h3>
+            <h3 class="font-bold text-sm text-slate-800">ความชื้นในดิน (เฉพาะ Zone 1 - 3)</h3>
           </div>
-          <span class="text-[11px] text-slate-400 font-medium">3 จุดวัด</span>
+          <span class="text-[11px] text-sky-700 font-semibold bg-sky-50 px-2.5 py-0.5 rounded-full border border-sky-100 flex items-center gap-1">
+            <i class="ti ti-droplet-half-2 text-xs"></i> Zone 4: น้ำหยด (เวลา)
+          </span>
         </div>
 
         <div class="grid grid-cols-3 gap-2 text-center pt-1">
@@ -288,6 +290,10 @@
             <span class="text-[10px] text-slate-500 mt-1" id="soilStatus2">ปกติ</span>
           </div>
         </div>
+
+        <div class="mt-3 pt-2.5 border-t border-slate-100 text-[11px] text-slate-500 text-center flex items-center justify-center gap-1.5">
+          <i class="ti ti-droplet-half-2 text-sky-600"></i> Zone 4 เป็นระบบน้ำหยด ควบคุมการรดด้วยเวลาเท่านั้น (ไม่มีเซ็นเซอร์วัดความชื้นดิน)
+        </div>
       </div>
 
       <!-- Historical Analytics Charts Card -->
@@ -302,16 +308,16 @@
               <p class="text-[10px] text-slate-400">สภาพแวดล้อม ความชื้นดิน และการใช้น้ำ</p>
             </div>
           </div>
-          <!-- Time Range Pills & Reset Button -->
+          <!-- Time Range Pills & Clear Button -->
           <div class="flex items-center gap-1.5">
-            <div class="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-semibold" id="chartRangeTabs">
-              <button type="button" id="btnRange24h" onclick="changeChartRange('24h')" class="px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition whitespace-nowrap">1 วัน</button>
-              <button type="button" id="btnRange7d" onclick="changeChartRange('7d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">1 สัปดาห์</button>
-              <button type="button" id="btnRange30d" onclick="changeChartRange('30d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">1 เดือน</button>
-              <button type="button" id="btnRange90d" onclick="changeChartRange('90d')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap">3 เดือน</button>
+            <div class="flex bg-slate-100 p-0.5 rounded-xl text-[10px] font-semibold" id="chartRangeTabs">
+              <button type="button" id="btnRange1d" onclick="changeChartRange('1d')" class="px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition">1 วัน</button>
+              <button type="button" id="btnRange1w" onclick="changeChartRange('1w')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium">1 สัปดาห์</button>
+              <button type="button" id="btnRange1m" onclick="changeChartRange('1m')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium">1 เดือน</button>
+              <button type="button" id="btnRange3m" onclick="changeChartRange('3m')" class="px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium">3 เดือน</button>
             </div>
-            <button type="button" onclick="confirmResetChartData()" class="h-6 px-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-semibold flex items-center gap-0.5 transition active:scale-95 border border-rose-200/60" title="ล้างประวัติข้อมูลกราฟที่ค้างอยู่">
-              <i class="ti ti-trash text-xs"></i> <span class="hidden sm:inline">ล้าง</span>
+            <button type="button" id="btnClearHistory" onclick="confirmClearHistory()" class="w-6 h-6 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-400 hover:text-rose-600 flex items-center justify-center transition" title="ล้างข้อมูลกราฟย้อนหลัง">
+              <i class="ti ti-trash text-xs"></i>
             </button>
           </div>
         </div>
@@ -397,46 +403,35 @@
         <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 bg-white text-forest-800 shadow-xs active-pill" data-zone="0">Zone 1</button>
         <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="1">Zone 2</button>
         <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="2">Zone 3</button>
-        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="3">Zone 4</button>
+        <button class="flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900" data-zone="3">Zone 4 (น้ำหยด)</button>
       </div>
+
+      <!-- Selected Zone Status / Soil Moisture Banner -->
+      <div id="schedZoneBanner"></div>
 
       <!-- Zone Basic Config Card -->
       <div class="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-4">
-        <!-- Zone Custom Name Input -->
-        <div class="pb-3 border-b border-slate-100">
-          <label class="font-semibold text-sm text-slate-800 flex items-center justify-between mb-1.5">
-            <span class="flex items-center gap-1.5">
-              <i class="ti ti-tag text-emerald-600"></i> ชื่อโซน / แปลง
+        <!-- Unified Mode Select (Synchronized with Page 1 Dashboard & Page 2 Controls) -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <span class="font-bold text-sm text-slate-800 block">โหมดการทำงานของโซน</span>
+              <span class="text-xs text-slate-400">ซิงค์ตรงกับหน้าแรก (สถานะและโหมด 4 โซน) และหน้าที่สอง (ควบคุมวาล์ว)</span>
+            </div>
+            <span id="cfgZoneModeBadge" class="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+              TIMER
             </span>
-            <span class="text-[11px] font-normal text-slate-400">พิมพ์แก้ไขได้</span>
-          </label>
-          <div class="relative">
-            <input type="text" id="cfgZoneName" class="w-full px-3.5 py-2 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-forest-500 focus:bg-white transition" placeholder="เช่น แปลงผักสลัด, แปลงเมลอน...">
           </div>
-        </div>
 
-        <!-- Enable Zone -->
-        <div class="flex items-center justify-between pb-3 border-b border-slate-100">
-          <div>
-            <span class="font-semibold text-sm text-slate-800 block">เปิดใช้งาน Zone นี้</span>
-            <span class="text-xs text-slate-400">อนุญาตให้รดน้ำตามตารางเวลาหรือ Smart Mode</span>
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" id="cfgZoneEnabled" class="sr-only peer">
-            <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-forest-600"></div>
-          </label>
-        </div>
+          <!-- Segmented Mode Control Container (Populated dynamically by JS) -->
+          <div id="cfgZoneModeSegmented" class="mt-2.5"></div>
 
-        <!-- Mode Select -->
-        <div class="flex items-center justify-between pb-3 border-b border-slate-100">
-          <div>
-            <span class="font-semibold text-sm text-slate-800 block">โหมดการทำงาน</span>
-            <span class="text-xs text-slate-400">เลือกเงื่อนไขในการเริ่มรดน้ำ</span>
-          </div>
-          <select id="cfgZoneMode" class="bg-surface-subtle border border-slate-200 text-slate-800 text-xs font-semibold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-forest-500">
-            <option value="0">OFF (ปิด)</option>
-            <option value="1">TIMER (ตามเวลา)</option>
-            <option value="2">SMART (ความชื้นดิน)</option>
+          <!-- Hidden inputs for compatibility -->
+          <input type="checkbox" id="cfgZoneEnabled" class="hidden">
+          <select id="cfgZoneMode" class="hidden">
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
           </select>
         </div>
 
@@ -480,6 +475,23 @@
           <i class="ti ti-circle-plus text-base text-forest-700"></i>
           <span>เพิ่มช่วงเวลารดน้ำ (+ เพิ่มช่วงเวลา)</span>
         </button>
+      </div>
+
+      <!-- Flow Protection Switch (ป้องกันปั๊มไหม้ / ตัดการรดน้ำหากน้ำไม่ไหล) -->
+      <div class="p-4 rounded-2xl bg-white border border-slate-200/90 shadow-xs flex items-center justify-between">
+        <div class="space-y-0.5 pr-2">
+          <div class="flex items-center gap-1.5">
+            <i class="ti ti-shield-water text-emerald-600 text-sm"></i>
+            <span class="text-xs font-bold text-slate-800">ระบบตรวจจับน้ำไม่ไหล (Flow Protection)</span>
+          </div>
+          <p class="text-[11px] text-slate-500 leading-tight">
+            ตัดการรดน้ำอัตโนมัติหากเปิดวาล์วแล้วไม่มีน้ำไหล (แนะนำ<b>ปิดไว้</b>ขณะทดสอบแบบไม่ต่อน้ำจริง เพื่อไม่ให้ตัดรดน้ำ)
+          </p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+          <input type="checkbox" id="cfgFlowProtection" class="sr-only peer">
+          <div class="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-forest-600"></div>
+        </label>
       </div>
 
       <!-- Save Config Button -->
@@ -529,9 +541,6 @@
             <span class="text-xl mb-1">⏰</span>
             <span class="text-xs font-semibold text-slate-700">RTC DS3231</span>
             <span id="hwRtcStatus" class="text-[11px] font-medium text-slate-400 mt-0.5">--</span>
-            <button type="button" onclick="syncDeviceTime()" class="mt-1.5 px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-100/70 hover:bg-emerald-200 rounded-md transition" title="ซิงค์เวลานาฬิกากับเครื่องนี้">
-              <i class="ti ti-refresh text-[10px]"></i> ซิงค์เวลา
-            </button>
           </div>
           <!-- SHT30 -->
           <div class="p-2.5 rounded-2xl bg-surface-subtle border border-slate-100 flex flex-col items-center">

@@ -53,7 +53,7 @@ let state = {
   lastData: null,
   configData: null,
   activeDurations: [10, 10, 10, 10], // default duration in minutes for each zone
-  zoneModes: [1, 1, 2, 0], // 0: OFF, 1: MANUAL, 2: AUTO
+  zoneModes: [1, 1, 2, 1], // 0: OFF, 1: TIMER, 2: SMART (Zone 4 is TIMER only)
   zoneSchedules: {
     0: [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }],
     1: [{ enabled: true, hour: 7, minute: 30, duration: 15, days: 127 }],
@@ -62,187 +62,23 @@ let state = {
   },
   wizardStep: 1,
   chartMetric: 'env', // 'env' | 'soil' | 'water'
-  chartRange: '24h',   // '24h' | '7d'
+  chartRange: '1d',   // '1d' | '1w' | '1m' | '3m'
   firebaseHistory: [], // Real historical records from Firebase
-  lastHistoryRecordTime: 0
+  lastHistoryRecordTime: 0,
+  lastReceivedAt: 0,
+  receivedCount: 0
 };
 
-const DEFAULT_ZONE_NAMES = [
+const ZONE_NAMES = [
   'Zone 1 (แปลงผักสลัด)',
   'Zone 2 (แปลงเมลอน)',
   'Zone 3 (แปลงมะเขือเทศ)',
-  'Zone 4 (ระบบพ่นหมอก)'
+  'Zone 4 (ระบบน้ำหยด)'
 ];
-const DEFAULT_ZONE_SHORT_NAMES = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4'];
-
-// Load customized zone names from localStorage or default
-state.customZoneNames = (() => {
-  try {
-    const saved = localStorage.getItem('verdante_custom_zone_names');
-    if (saved) return JSON.parse(saved);
-  } catch (e) {}
-  return [...DEFAULT_ZONE_NAMES];
-})();
-
-function getZoneName(z) {
-  return state.customZoneNames?.[z] || DEFAULT_ZONE_NAMES[z] || `Zone ${z + 1}`;
-}
-
-function getZoneShortName(z) {
-  if (state.customZoneNames?.[z]) {
-    const n = state.customZoneNames[z];
-    if (n.length <= 16) return n;
-    return n.substring(0, 14) + '...';
-  }
-  return DEFAULT_ZONE_SHORT_NAMES[z] || `Zone ${z + 1}`;
-}
-
-// Transparent Backward Compatibility Proxies
-const ZONE_NAMES = new Proxy(DEFAULT_ZONE_NAMES, {
-  get: (target, prop) => {
-    const idx = parseInt(prop);
-    if (!isNaN(idx) && idx >= 0 && idx < 4) {
-      return getZoneName(idx);
-    }
-    return target[prop];
-  }
-});
-
-const ZONE_SHORT_NAMES = new Proxy(DEFAULT_ZONE_SHORT_NAMES, {
-  get: (target, prop) => {
-    const idx = parseInt(prop);
-    if (!isNaN(idx) && idx >= 0 && idx < 4) {
-      return getZoneShortName(idx);
-    }
-    return target[prop];
-  }
-});
-
-function updateScheduleTabZoneButtons() {
-  document.querySelectorAll('#schedZoneSelector button').forEach((btn) => {
-    const z = parseInt(btn.dataset.zone);
-    if (!isNaN(z)) {
-      btn.textContent = getZoneShortName(z);
-    }
-  });
-}
-
-function promptRenameZone(z) {
-  Swal.fire({
-    title: `แก้ไขชื่อ ${DEFAULT_ZONE_SHORT_NAMES[z]}`,
-    text: 'พิมพ์ชื่อแปลงที่ต้องการ (เช่น แปลงผักสลัด, แปลงไฮโดรโปนิกส์):',
-    input: 'text',
-    inputValue: getZoneName(z),
-    showCancelButton: true,
-    confirmButtonText: 'บันทึกชื่อแปลง',
-    cancelButtonText: 'ยกเลิก',
-    confirmButtonColor: '#15803D',
-    cancelButtonColor: '#94A3B8',
-    preConfirm: (name) => {
-      if (!name || !name.trim()) {
-        Swal.showValidationMessage('กรุณากรอกชื่อแปลง');
-      }
-      return name.trim();
-    }
-  }).then((res) => {
-    if (res.isConfirmed && res.value) {
-      saveCustomZoneName(z, res.value, true);
-    }
-  });
-}
-
-function saveCustomZoneName(z, newName, showToast = true) {
-  if (!state.customZoneNames) state.customZoneNames = [...DEFAULT_ZONE_NAMES];
-  state.customZoneNames[z] = newName;
-  try {
-    localStorage.setItem('verdante_custom_zone_names', JSON.stringify(state.customZoneNames));
-  } catch (e) {}
-
-  // Sync to Firebase RTDB
-  db.ref(`devices/esp32/customZoneNames/${z}`).set(newName).catch(() => {});
-
-  // Update UI immediately
-  renderDashboardZoneCards(state.lastData?.zones || []);
-  renderZoneControls(state.lastData);
-  updateScheduleTabZoneButtons();
-  const nameInput = document.getElementById('cfgZoneName');
-  if (nameInput && state.selectedZone === z) {
-    nameInput.value = newName;
-  }
-
-  if (showToast) {
-    Swal.fire({
-      toast: true,
-      position: 'top',
-      icon: 'success',
-      title: `เปลี่ยนชื่อเป็น "${newName}" เรียบร้อย 🌿`,
-      showConfirmButton: false,
-      timer: 2000
-    });
-  }
-}
-
-function syncDeviceTime() {
-  const now = new Date();
-  const timeFormatted = now.toLocaleTimeString('th-TH');
-  const dateFormatted = now.toLocaleDateString('th-TH');
-  Swal.fire({
-    title: 'ซิงค์เวลากับเครื่องนี้?',
-    text: `ต้องการตั้งนาฬิกา RTC DS3231 ของ ESP32 ให้ตรงกับเวลานี้: ${timeFormatted} (${dateFormatted}) หรือไม่?`,
-    icon: 'question',
-    showCancelButton: true,
-    confirmButtonText: 'ยืนยันซิงค์เวลา',
-    cancelButtonText: 'ยกเลิก',
-    confirmButtonColor: '#15803D',
-    cancelButtonColor: '#94A3B8',
-  }).then((res) => {
-    if (res.isConfirmed) {
-      commandRef.set({
-        syncTime: true,
-        year: now.getFullYear(),
-        month: now.getMonth() + 1,
-        day: now.getDate(),
-        hour: now.getHours(),
-        minute: now.getMinutes(),
-        second: now.getSeconds(),
-        timestamp: Date.now(),
-        source: 'web_app_timesync'
-      }).then(() => {
-        setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
-        Swal.fire({
-          toast: true,
-          position: 'top',
-          icon: 'success',
-          title: `ส่งคำสั่งซิงค์เวลา ${timeFormatted} สำเร็จ ⏱️`,
-          showConfirmButton: false,
-          timer: 2500
-        });
-      }).catch((err) => {
-        handleFirebaseError(err, 'syncDeviceTime');
-      });
-    }
-  });
-}
-
-// 1-second real-time clock ticker
-setInterval(() => {
-  if (typeof state.lastRtcSeconds === 'number') {
-    state.lastRtcSeconds = (state.lastRtcSeconds + 1) % 86400;
-    const h = Math.floor(state.lastRtcSeconds / 3600);
-    const m = Math.floor((state.lastRtcSeconds % 3600) / 60);
-    const s = state.lastRtcSeconds % 60;
-    const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    const clockEl = document.getElementById('clockDisplay');
-    if (clockEl) clockEl.textContent = timeStr;
-    const dashTimeEl = document.getElementById('dashDeviceTime');
-    if (dashTimeEl) dashTimeEl.textContent = timeStr;
-  }
-}, 1000);
-
+const ZONE_SHORT_NAMES = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4 (น้ำหยด)'];
 const ZONE_COLORS = ['#10b981', '#0d9488', '#16a34a', '#0284c7'];
-const MODE_NAMES = ['OFF', 'MANUAL', 'AUTO'];
+const MODE_NAMES = ['OFF', 'TIMER', 'SMART'];
 const DAY_LABELS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
-
 
 // Simulated / Discovered WiFi networks
 const NEARBY_WIFI_NETWORKS = [
@@ -344,59 +180,75 @@ function switchTab(tabId) {
     }
   });
 
+  // If switched to schedule, immediately render settings from memory without waiting
+  if (tabId === 'pageSchedule') {
+    renderScheduleSettings();
+  }
+
   // If switched to dashboard, re-render chart to ensure correct canvas sizing
   if (tabId === 'pageDashboard' && historicalChartInstance) {
     setTimeout(() => {
       historicalChartInstance.resize();
-    }, 50);
+    }, 30);
   }
 
-  // Scroll to top
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Instant scroll (no smooth animation delay)
+  window.scrollTo(0, 0);
 }
 
 // ================================================================
 //  FIREBASE REALTIME LISTENERS
 // ================================================================
 
-let lastStatusReceivedTime = 0;
-
-// 1. Listen for device status
+// 1. Listen for device status with Stale Detection
 statusRef.on('value', (snapshot) => {
   const data = snapshot.val();
   if (!data) {
     setConnectionState(false);
     return;
   }
-  lastStatusReceivedTime = Date.now();
-  setConnectionState(true);
+
+  state.receivedCount = (state.receivedCount || 0) + 1;
+  state.lastReceivedAt = Date.now();
   state.lastData = data;
 
-  // Sync zone modes if available from ESP32 (guard against UI bouncing back while command/config is pending)
+  // Stale check and RTC calibration from ESP32
+  if (data.date && data.time) {
+    const timeStr = data.time.length === 5 ? data.time + ':00' : data.time;
+    const espTime = Date.parse(`${data.date}T${timeStr}+07:00`) || Date.parse(`${data.date} ${data.time}`);
+    if (!isNaN(espTime)) {
+      const timeDiff = Math.abs(Date.now() - espTime);
+      state.rtcOffset = espTime - Date.now();
+      state.rtcDate = data.date;
+
+      // Auto-sync time if ESP32 clock drifted by more than 15 seconds
+      if (timeDiff > 15000 && !state.hasAutoSyncedTime) {
+        state.hasAutoSyncedTime = true;
+        console.log(`[Time Sync] ESP32 clock drifted by ${(timeDiff / 1000).toFixed(0)}s. Auto-syncing with Thailand time...`);
+        syncTimeToEsp32(true);
+      }
+
+      if (timeDiff > 180000 && state.receivedCount <= 1 && !state.hasAutoSyncedTime) {
+        // Data is older than 3 minutes -> likely offline from a previous run
+        console.warn('[Stale Detection] Initial snapshot is old (' + data.date + ' ' + data.time + '), waiting for fresh update...');
+        // Wait 6 seconds for a second heartbeat; if not, mark offline
+        setTimeout(() => {
+          if (state.receivedCount <= 1) {
+            setConnectionState(false);
+            clearDashboardLiveValues();
+          }
+        }, 6000);
+      }
+    }
+  }
+
+  setConnectionState(true);
+
+  // Sync zone modes if available from ESP32
   if (data.zones && Array.isArray(data.zones)) {
     data.zones.forEach((z, i) => {
       if (typeof z.mode === 'number') {
-        const pending = state.pendingModeChanges?.[i];
-        if (pending && (Date.now() - pending.timestamp < 8000)) {
-          if (z.mode === pending.mode) {
-            delete state.pendingModeChanges[i];
-            state.zoneModes[i] = z.mode;
-          }
-          // Preserve user-selected mode during pending window
-        } else {
-          state.zoneModes[i] = z.mode;
-        }
-      }
-
-      // If user recently clicked stop, don't let stale running=true snap back!
-      const pendingStop = state.pendingStopActions?.[i];
-      if (pendingStop && (Date.now() - pendingStop < 6000)) {
-        if (!z.running) {
-          delete state.pendingStopActions[i];
-        } else {
-          z.running = false;
-          z.remaining = 0;
-        }
+        state.zoneModes[i] = z.mode;
       }
     });
   }
@@ -408,20 +260,48 @@ statusRef.on('value', (snapshot) => {
 }, (error) => {
   console.warn('[Firebase] Status listen warning:', error);
   setConnectionState(false);
+  clearDashboardLiveValues();
 });
 
-// Heartbeat Watchdog: Check every 2.5s if ESP32 hasn't published status in > 10s
+// Periodic Stale Check (Checks if ESP32 stopped uploading for > 20 seconds)
 setInterval(() => {
-  const now = Date.now();
-  if (state.connected && lastStatusReceivedTime > 0 && (now - lastStatusReceivedTime > 10000)) {
-    console.warn('[Watchdog] No update from ESP32 for >10s. Device is offline/powered off.');
-    setConnectionState(false);
-    const clockEl = document.getElementById('clockDisplay');
-    if (clockEl) clockEl.textContent = '--:--:--';
-    const dashTimeEl = document.getElementById('dashDeviceTime');
-    if (dashTimeEl) dashTimeEl.textContent = 'ขาดการติดต่อ';
+  if (state.lastReceivedAt && (Date.now() - state.lastReceivedAt > 20000)) {
+    if (state.connected) {
+      console.warn('[Stale Detection] No updates received for 20s. Marking ESP32 offline.');
+      setConnectionState(false);
+      clearDashboardLiveValues();
+    }
   }
-}, 2500);
+}, 4000);
+
+// Helper to clear dashboard metrics when ESP32 is powered off or disconnected
+function clearDashboardLiveValues() {
+  const valTempEl = document.getElementById('valTemp');
+  const valHumEl = document.getElementById('valHumid');
+  const barTempEl = document.getElementById('barTemp');
+  const barHumEl = document.getElementById('barHumid');
+  const flowEl = document.getElementById('dashFlowRate');
+
+  if (valTempEl) valTempEl.textContent = '--';
+  if (valHumEl) valHumEl.textContent = '--';
+  if (barTempEl) barTempEl.style.width = '0%';
+  if (barHumEl) barHumEl.style.width = '0%';
+  if (flowEl) flowEl.textContent = '0.00';
+
+  for (let i = 0; i < 3; i++) {
+    const valEl = document.getElementById(`valSoil${i}`);
+    const unitEl = document.getElementById(`unitSoil${i}`);
+    const gaugeEl = document.getElementById(`soilGauge${i}`);
+    const statusEl = document.getElementById(`soilStatus${i}`);
+    if (valEl) valEl.textContent = '--';
+    if (unitEl) unitEl.style.display = 'inline';
+    if (gaugeEl) gaugeEl.setAttribute('stroke-dasharray', '0 264');
+    if (statusEl) {
+      statusEl.textContent = 'ออฟไลน์';
+      statusEl.className = 'text-[10px] text-slate-400 font-medium';
+    }
+  }
+}
 
 // 2. Listen for Firebase network connection
 db.ref('.info/connected').on('value', (snap) => {
@@ -431,59 +311,76 @@ db.ref('.info/connected').on('value', (snap) => {
   }
 });
 
-// 3. Listen for Custom Zone Names
-db.ref('devices/esp32/customZoneNames').on('value', (snapshot) => {
-  const names = snapshot.val();
-  if (names) {
-    for (let i = 0; i < 4; i++) {
-      if (names[i]) state.customZoneNames[i] = names[i];
-    }
-    try {
-      localStorage.setItem('verdante_custom_zone_names', JSON.stringify(state.customZoneNames));
-    } catch (e) {}
-    renderDashboardZoneCards(state.lastData?.zones || []);
-    renderZoneControls(state.lastData);
-    updateScheduleTabZoneButtons();
-    const nameInput = document.getElementById('cfgZoneName');
-    if (nameInput && state.selectedZone !== undefined) {
-      nameInput.value = getZoneName(state.selectedZone);
-    }
-  }
-});
+// 3. Robust Config Parser and Firebase Listener (Parses both flat and nested keys for all 4 zones)
+function parseFirebaseConfig(data) {
+  if (!data || typeof data !== 'object') return;
+  state.configData = data;
+  if (!state.configData.zones) state.configData.zones = [];
 
-// 4. Listen for Config changes
-configRef.on('value', (snapshot) => {
-  const data = snapshot.val();
-  if (data) {
-    state.configData = data;
-    // Extract schedules per zone
-    if (data.zones && Array.isArray(data.zones)) {
-      data.zones.forEach((z, i) => {
-        if (z.schedules && Array.isArray(z.schedules) && z.schedules.length > 0) {
-          // Keep only slots that are non-zero/valid
-          const valid = z.schedules.filter(s => s.duration > 0 || s.enabled);
-          state.zoneSchedules[i] = valid.length > 0 ? valid : z.schedules.slice(0, 1);
-        }
-        if (typeof z.mode === 'number') {
-          state.zoneModes[i] = z.mode;
-        }
-      });
-    }
+  for (let i = 0; i < 4; i++) {
+    const zoneObj = (Array.isArray(data.zones) ? data.zones[i] : null) || {};
+    const enabled = data[`z${i}_enabled`] ?? zoneObj.enabled ?? true;
+    const mode = data[`z${i}_mode`] ?? zoneObj.mode ?? 1;
+    const moistStart = data[`z${i}_moistStart`] ?? zoneObj.moistureStart ?? 35;
+    const moistStop = data[`z${i}_moistStop`] ?? zoneObj.moistureStop ?? 55;
 
-    // Also check flat keys if present (from ESP32 firmware format)
-    for (let z = 0; z < 4; z++) {
-      if (typeof data[`z${z}_mode`] === 'number') {
-        state.zoneModes[z] = data[`z${z}_mode`];
+    state.zoneModes[i] = mode;
+
+    let scheds = [];
+    if (zoneObj.schedules && Array.isArray(zoneObj.schedules)) {
+      scheds = zoneObj.schedules.filter(s => (s.duration > 0 || s.enabled) && (s.hour !== undefined || s.minute !== undefined));
+    }
+    if (scheds.length === 0) {
+      // Parse from flat keys: zX_sY_en, zX_sY_h, zX_sY_m, zX_sY_dur, zX_sY_days
+      for (let s = 0; s < 4; s++) {
+        const en = data[`z${i}_s${s}_en`];
+        const h = data[`z${i}_s${s}_h`];
+        const m = data[`z${i}_s${s}_m`];
+        const dur = data[`z${i}_s${s}_dur`];
+        const days = data[`z${i}_s${s}_days`];
+        if (en !== undefined || h !== undefined || dur !== undefined) {
+          if (dur > 0 || en) {
+            scheds.push({
+              enabled: !!en,
+              hour: h ?? 6,
+              minute: m ?? 0,
+              duration: dur ?? 10,
+              days: days ?? 127
+            });
+          }
+        }
       }
     }
 
-    renderDashboardZoneCards(state.lastData?.zones || []);
-    renderZoneControls(state.lastData);
-    if (state.currentTab === 'pageSchedules') {
-      renderScheduleSlots(state.selectedZone);
+    if (scheds.length === 0) {
+      scheds = [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }];
     }
 
-    renderScheduleSettings();
+    state.zoneSchedules[i] = scheds;
+    state.configData.zones[i] = {
+      enabled,
+      mode,
+      moistureStart: moistStart,
+      moistureStop: moistStop,
+      schedules: scheds
+    };
+  }
+}
+
+configRef.on('value', (snapshot) => {
+  const data = snapshot.val();
+  if (data) {
+    parseFirebaseConfig(data);
+    // Re-render schedule settings only if not currently focused in an input on schedule page
+    const isUserEditingSchedule = document.activeElement && 
+      document.getElementById('pageSchedule')?.contains(document.activeElement) && 
+      ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
+
+    if (!isUserEditingSchedule) {
+      renderScheduleSettings();
+    }
+    renderDashboardZoneCards(state.lastData?.zones || []);
+    renderZoneControls(state.lastData);
   }
 });
 
@@ -492,17 +389,12 @@ alarmHistoryRef.orderByKey().limitToLast(15).on('value', (snapshot) => {
   renderAlarmHistory(snapshot.val());
 });
 
-// 5. Listen for Historical Telemetry Log (Real data from ESP32)
-historyRef.limitToLast(300).on('value', (snapshot) => {
+// 5. Listen for Historical Telemetry Log from Firebase (up to 500 records for 3-month support)
+historyRef.orderByChild('timestamp').limitToLast(500).on('value', (snapshot) => {
   const val = snapshot.val();
   if (val) {
     state.firebaseHistory = Object.values(val);
-    if (state.currentTab === 'pageDashboard') {
-      initHistoricalChart();
-    }
-  } else {
-    state.firebaseHistory = [];
-    if (state.currentTab === 'pageDashboard') {
+    if (historicalChartInstance && state.currentTab === 'pageDashboard') {
       initHistoricalChart();
     }
   }
@@ -516,28 +408,16 @@ function setConnectionState(connected) {
   const dot = document.getElementById('connDot');
   const text = document.getElementById('connText');
   const banner = document.getElementById('offlineBanner');
-  const clockEl = document.getElementById('clockDisplay');
 
   if (connected) {
-    if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
-    if (text) {
-      text.textContent = 'ออนไลน์';
-      text.className = 'font-semibold text-emerald-700';
-    }
-    if (clockEl) {
-      clockEl.className = 'font-mono text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60';
-    }
+    dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+    text.textContent = 'ออนไลน์';
+    text.className = 'font-semibold text-emerald-700';
     if (banner) banner.classList.add('hidden');
   } else {
-    if (dot) dot.className = 'w-2 h-2 rounded-full bg-slate-300';
-    if (text) {
-      text.textContent = 'ออฟไลน์ (ขาดการเชื่อมต่อ)';
-      text.className = 'font-medium text-slate-500';
-    }
-    if (clockEl) {
-      clockEl.className = 'font-mono text-[11px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded';
-      clockEl.textContent = '--:--:--';
-    }
+    dot.className = 'w-2 h-2 rounded-full bg-slate-300';
+    text.textContent = 'ออฟไลน์';
+    text.className = 'font-medium text-slate-500';
     if (banner) banner.classList.remove('hidden');
   }
 }
@@ -551,59 +431,50 @@ function renderDashboard(data) {
   // Auto-record telemetry snapshot for historical charts
   recordTelemetrySnapshot(data);
 
-  // Clock & Date (from RTC DS3231)
-  if (data.time) {
-    const parts = data.time.split(':').map(Number);
-    if (parts.length === 3 && !isNaN(parts[0])) {
-      state.lastRtcSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
-    }
-    const clockEl = document.getElementById('clockDisplay');
-    if (clockEl) clockEl.textContent = data.time;
-    const dashTimeEl = document.getElementById('dashDeviceTime');
-    if (dashTimeEl) dashTimeEl.textContent = data.time;
+  // Clock & Date display
+  const clockEl = document.getElementById('clockDisplay');
+  const dateEl = document.getElementById('dateDisplay');
+  if (data.date && dateEl) {
+    dateEl.textContent = data.date;
   }
-  if (data.date) {
-    const dashDateEl = document.getElementById('dashDeviceDate');
-    if (dashDateEl) dashDateEl.textContent = `(${data.date})`;
+  if (data.time && clockEl) {
+    clockEl.textContent = data.time;
   }
 
   // FW Badge
   if (data.fw) {
-    const fwEl = document.getElementById('fwBadge');
-    if (fwEl) fwEl.textContent = 'FW v' + data.fw;
+    document.getElementById('fwBadge').textContent = 'FW v' + data.fw;
   }
 
   // Flow rate & totals
   if (data.flow) {
-    const flowRateEl = document.getElementById('dashFlowRate');
-    const flowTotalEl = document.getElementById('dashFlowTotal');
-    if (flowRateEl) flowRateEl.textContent = (data.flow.rate ?? 0).toFixed(2);
-    if (flowTotalEl) flowTotalEl.textContent = (data.flow.total ?? 0).toFixed(2);
+    document.getElementById('dashFlowRate').textContent = (data.flow.rate ?? 0).toFixed(2);
+    document.getElementById('dashFlowTotal').textContent = (data.flow.total ?? 0).toFixed(2);
   }
 
   // Temperature
   const temp = data.temperature;
   const valTempEl = document.getElementById('valTemp');
   const barTempEl = document.getElementById('barTemp');
-  if (typeof temp === 'number') {
-    if (valTempEl) valTempEl.textContent = temp.toFixed(1);
+  if (typeof temp === 'number' && !isNaN(temp)) {
+    valTempEl.textContent = temp.toFixed(1);
     const pct = Math.min(100, Math.max(0, (temp / 45) * 100));
-    if (barTempEl) barTempEl.style.width = `${pct}%`;
+    barTempEl.style.width = `${pct}%`;
   } else {
-    if (valTempEl) valTempEl.textContent = '--.-';
-    if (barTempEl) barTempEl.style.width = '0%';
+    valTempEl.textContent = '--';
+    barTempEl.style.width = '0%';
   }
 
   // Humidity
   const hum = data.humidity;
   const valHumEl = document.getElementById('valHumid');
   const barHumEl = document.getElementById('barHumid');
-  if (typeof hum === 'number') {
-    if (valHumEl) valHumEl.textContent = hum.toFixed(1);
-    if (barHumEl) barHumEl.style.width = `${Math.min(100, hum)}%`;
+  if (typeof hum === 'number' && !isNaN(hum)) {
+    valHumEl.textContent = hum.toFixed(1);
+    barHumEl.style.width = `${Math.min(100, hum)}%`;
   } else {
-    if (valHumEl) valHumEl.textContent = '--.-';
-    if (barHumEl) barHumEl.style.width = '0%';
+    valHumEl.textContent = '--';
+    barHumEl.style.width = '0%';
   }
 
   // Soil Moisture Gauges (Zones 0, 1, 2)
@@ -613,24 +484,26 @@ function renderDashboard(data) {
 
   for (let i = 0; i < 3; i++) {
     const val = soils[i];
-    const err = soilErrors[i] || val === -1 || val === null || val === undefined;
+    const err = soilErrors[i];
     const gaugeEl = document.getElementById(`soilGauge${i}`);
     const valEl = document.getElementById(`valSoil${i}`);
     const unitEl = document.getElementById(`unitSoil${i}`);
     const statusEl = document.getElementById(`soilStatus${i}`);
 
-    if (err) {
-      if (valEl) valEl.textContent = 'ERR';
+    const isErr = err || val === null || val === undefined || isNaN(val) || val < 0;
+
+    if (isErr) {
+      valEl.textContent = '-';
       if (unitEl) unitEl.style.display = 'none';
       if (gaugeEl) gaugeEl.setAttribute('stroke-dasharray', `0 ${circumference}`);
       if (statusEl) {
-        statusEl.textContent = 'ไม่ได้ต่อเซนเซอร์';
-        statusEl.className = 'text-[10px] text-rose-500 font-semibold';
+        statusEl.textContent = 'ไม่ได้เชื่อมต่อ';
+        statusEl.className = 'text-[10px] text-slate-400 font-medium';
       }
     } else {
       if (unitEl) unitEl.style.display = 'inline';
       const pct = typeof val === 'number' ? Math.max(0, Math.min(100, val)) : 0;
-      if (valEl) valEl.textContent = typeof val === 'number' ? val.toFixed(0) : '--';
+      valEl.textContent = typeof val === 'number' ? val.toFixed(0) : '--';
       const dash = (pct / 100) * circumference;
       if (gaugeEl) gaugeEl.setAttribute('stroke-dasharray', `${dash} ${circumference}`);
       
@@ -653,20 +526,26 @@ function renderDashboard(data) {
   renderDashboardZoneCards(data.zones || []);
 }
 
-// Render Dashboard Zone Mini Cards with 3-Mode Segmented Control
+// Render Dashboard Zone Mini Cards with Mode Control (Zone 1-3 have Soil Moisture & Smart mode; Zone 4 is Drip with Timer only)
 function renderDashboardZoneCards(zones) {
   const container = document.getElementById('dashZoneCards');
   if (!container) return;
 
   container.innerHTML = '';
+  const soils = state.lastData?.soil || [];
+  const soilErrors = state.lastData?.soilError || [];
 
   for (let z = 0; z < 4; z++) {
     const zone = zones[z] || {};
     const isRunning = zone.running;
     const isAlarm = zone.alarm;
-    const currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=MANUAL, 2=AUTO
+    let currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=TIMER, 2=SMART
+    if (z === 3 && currentMode === 2) {
+      currentMode = 1; // Zone 4 cannot be SMART
+      state.zoneModes[z] = 1;
+    }
+
     const card = document.createElement('div');
-    
     card.className = `p-3.5 rounded-2xl border transition-all duration-300 flex flex-col justify-between ${
       isRunning 
         ? 'bg-emerald-50/80 border-emerald-300 shadow-sm ring-1 ring-emerald-300' 
@@ -678,10 +557,10 @@ function renderDashboardZoneCards(zones) {
       statusBadge = '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">ALARM</span>';
     } else if (isRunning) {
       statusBadge = `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-800 flex items-center gap-1">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping"></span> ${currentMode === 1 ? 'MANUAL' : 'AUTO'}
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping"></span> ${MODE_NAMES[currentMode] || 'RUN'}
       </span>`;
     } else {
-      const modeLabel = currentMode === 0 ? 'OFF' : (currentMode === 1 ? 'MANUAL' : 'AUTO');
+      const modeLabel = MODE_NAMES[currentMode] || 'OFF';
       const badgeBg = currentMode === 0 ? 'bg-slate-100 text-slate-500' : (currentMode === 1 ? 'bg-emerald-100 text-emerald-800' : 'bg-sky-100 text-sky-800');
       statusBadge = `<span class="text-[10px] font-semibold px-2 py-0.5 rounded-full ${badgeBg}">${modeLabel}</span>`;
     }
@@ -695,34 +574,88 @@ function renderDashboardZoneCards(zones) {
       </div>`;
     }
 
+    // Soil Moisture or Drip Irrigation row (แสดงความชื้นดิน % ให้ดูแต่ละช่อง)
+    let soilBadge = '';
+    if (z < 3) {
+      const sVal = soils[z];
+      const sErr = soilErrors[z] || sVal === null || sVal === undefined || isNaN(sVal) || sVal < 0;
+      if (!sErr && typeof sVal === 'number') {
+        const pct = Math.max(0, Math.min(100, sVal));
+        soilBadge = `
+          <div class="flex items-center justify-between text-[11px] mt-1.5 py-1 px-2 rounded-xl bg-forest-50/80 border border-forest-100 text-forest-900">
+            <span class="flex items-center gap-1 font-semibold text-slate-700">
+              <i class="ti ti-seeding text-emerald-600"></i> ความชื้นดิน:
+            </span>
+            <span class="font-mono font-bold text-xs text-forest-800">${pct.toFixed(0)}%</span>
+          </div>
+        `;
+      } else {
+        soilBadge = `
+          <div class="flex items-center justify-between text-[11px] mt-1.5 py-1 px-2 rounded-xl bg-slate-50 border border-slate-200/70 text-slate-500">
+            <span class="flex items-center gap-1 font-medium text-slate-500">
+              <i class="ti ti-seeding text-slate-400"></i> ความชื้นดิน:
+            </span>
+            <span class="text-[10px] font-semibold text-slate-400 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+              ไม่ได้เชื่อมต่อ
+            </span>
+          </div>
+        `;
+      }
+    } else {
+      // Zone 4 is Drip Irrigation (Timer only, no soil sensor)
+      soilBadge = `
+        <div class="flex items-center justify-between text-[11px] mt-1.5 py-1 px-2 rounded-xl bg-sky-50 border border-sky-100 text-sky-800">
+          <span class="flex items-center gap-1 font-semibold text-sky-900">
+            <i class="ti ti-droplet-half-2 text-sky-600"></i> ระบบน้ำหยด:
+          </span>
+          <span class="text-[10px] font-bold text-sky-700 bg-white px-1.5 py-0.5 rounded border border-sky-200">
+            รดตามเวลา (ไม่มีเซ็นเซอร์)
+          </span>
+        </div>
+      `;
+    }
+
+    // Mode Selector HTML (Zone 1-3 have OFF|TIMER|SMART, Zone 4 has OFF|TIMER only)
+    const modeSegmentedHtml = z < 3 ? `
+      <div class="mode-segmented">
+        <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}" title="ปิดการทำงาน">
+          OFF
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}" title="รดน้ำตามตารางเวลา">
+          TIMER
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}" title="รดน้ำอัตโนมัติตามความชื้นดิน">
+          SMART
+        </button>
+      </div>
+    ` : `
+      <div class="mode-segmented grid-cols-2">
+        <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}" title="ปิดการทำงาน">
+          OFF (ปิด)
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}" title="รดน้ำตามตารางเวลา">
+          TIMER (ตามเวลา)
+        </button>
+      </div>
+    `;
+
     card.innerHTML = `
       <div>
-        <div class="flex items-center justify-between mb-1.5">
-          <div class="flex items-center gap-1 mr-1 min-w-0">
-            <span class="text-xs font-bold text-slate-800 truncate" title="${getZoneName(z)}">${getZoneShortName(z)}</span>
-            <button type="button" onclick="promptRenameZone(${z})" class="text-slate-300 hover:text-emerald-700 p-0.5 rounded transition shrink-0" title="เปลี่ยนชื่อแปลง">
-              <i class="ti ti-edit text-[10px]"></i>
-            </button>
-          </div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-bold text-slate-800">${ZONE_SHORT_NAMES[z]}</span>
           ${statusBadge}
         </div>
-        <div class="text-[11px] text-slate-500">ใช้น้ำ: <b class="text-slate-700 font-mono">${(zone.waterUsed ?? 0).toFixed(2)}</b> L</div>
+        ${soilBadge}
+        <div class="text-[11px] text-slate-500 mt-1 flex items-center justify-between">
+          <span class="text-slate-400">ใช้น้ำ:</span>
+          <b class="text-slate-700 font-mono">${(zone.waterUsed ?? 0).toFixed(2)} L</b>
+        </div>
         ${timerText}
       </div>
 
-      <!-- 3-Mode Segmented Control [ OFF | MANUAL | AUTO ] -->
-      <div class="mt-3 pt-2.5 border-t border-slate-100">
-        <div class="mode-segmented">
-          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}" title="ปิดการทำงาน">
-            OFF
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}" title="ควบคุมด้วยตนเอง">
-            MANUAL
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}" title="รดน้ำอัตโนมัติ">
-            AUTO
-          </button>
-        </div>
+      <!-- Mode Segmented Control -->
+      <div class="mt-2.5 pt-2 border-t border-slate-100">
+        ${modeSegmentedHtml}
 
         <!-- Quick Action Trigger -->
         <div class="mt-2 text-center">
@@ -730,11 +663,9 @@ function renderDashboardZoneCards(zones) {
             ? `<button onclick="confirmStopZone(${z})" class="w-full py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
                  <i class="ti ti-player-stop text-xs"></i> หยุดรดน้ำ
                </button>`
-            : currentMode === 1 
-              ? `<button onclick="confirmStartZone(${z})" class="w-full py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
-                   <i class="ti ti-player-play text-xs"></i> เปิดน้ำทันที
-                 </button>`
-              : `<span class="text-[10px] text-slate-400 block py-0.5">${currentMode === 0 ? 'วาล์วปิดสนิท' : 'พร้อมรดตามตาราง'}</span>`
+            : `<button onclick="confirmStartZone(${z})" class="w-full py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
+                 <i class="ti ti-player-play text-xs"></i> สั่งรดน้ำทันที
+               </button>`
           }
         </div>
       </div>
@@ -745,7 +676,7 @@ function renderDashboardZoneCards(zones) {
 }
 
 // ================================================================
-//  ZONE CONTROLS PAGE (3-Way Mode Control Included)
+//  ZONE CONTROLS PAGE (Mode Control & Soil Details)
 // ================================================================
 function renderZoneControls(data) {
   const container = document.getElementById('zoneControlsList');
@@ -756,9 +687,9 @@ function renderZoneControls(data) {
       { mode: 1, enabled: true, running: false, waterUsed: 0 },
       { mode: 1, enabled: true, running: false, waterUsed: 0 },
       { mode: 2, enabled: true, running: false, waterUsed: 0 },
-      { mode: 0, enabled: false, running: false, waterUsed: 0 }
+      { mode: 1, enabled: true, running: false, waterUsed: 0 }
     ],
-    soil: [45, 52, 40],
+    soil: [-1, -1, -1],
     flow: { rate: 0.0, total: 0.0 }
   };
 
@@ -770,7 +701,11 @@ function renderZoneControls(data) {
     const isRunning = zone.running;
     const isAlarm = zone.alarm;
     const duration = state.activeDurations[z] || 10;
-    const currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=MANUAL, 2=AUTO
+    let currentMode = state.zoneModes[z] ?? (zone.mode ?? 1); // 0=OFF, 1=TIMER, 2=SMART
+    if (z === 3 && currentMode === 2) {
+      currentMode = 1;
+      state.zoneModes[z] = 1;
+    }
 
     const card = document.createElement('div');
     card.className = `p-4 rounded-3xl border transition-all duration-300 ${
@@ -792,34 +727,62 @@ function renderZoneControls(data) {
       `;
     }
 
-    // Soil Moisture for Zone 0-2
+    // Soil Moisture for Zone 0-2, Drip badge for Zone 3
     let soilRow = '';
-    if (z < 3 && d.soil) {
-      const sVal = d.soil[z];
-      const sErr = d.soilError?.[z];
+    if (z < 3) {
+      const sVal = d.soil ? d.soil[z] : null;
+      const sErr = d.soilError?.[z] || sVal === null || sVal === undefined || isNaN(sVal) || sVal < 0;
       soilRow = `
         <div class="bg-surface-subtle p-2 rounded-xl text-center">
-          <span class="text-[10px] text-slate-400 block">ความชื้นดิน</span>
-          <span class="text-xs font-bold ${sErr ? 'text-rose-500' : 'text-slate-800'}">
-            ${sErr ? 'ยังไม่ต่อ' : (typeof sVal === 'number' ? sVal.toFixed(0) + '%' : '--')}
+          <span class="text-[10px] text-slate-400 block font-medium">ความชื้นดิน</span>
+          <span class="text-xs font-bold ${sErr ? 'text-slate-400 text-[10px]' : 'text-emerald-700 font-mono'}">
+            ${sErr ? 'ไม่ได้เชื่อมต่อ' : (typeof sVal === 'number' && !isNaN(sVal) ? sVal.toFixed(0) + '%' : '--')}
+          </span>
+        </div>
+      `;
+    } else {
+      soilRow = `
+        <div class="bg-sky-50/80 border border-sky-100 p-2 rounded-xl text-center">
+          <span class="text-[10px] text-sky-600 block font-medium">ระบบน้ำหยด</span>
+          <span class="text-[11px] font-bold text-sky-800 flex items-center justify-center gap-0.5">
+            <i class="ti ti-droplet-half-2 text-sky-500 text-xs"></i> ตามเวลา
           </span>
         </div>
       `;
     }
 
+    // Mode segmented selector
+    const modeSegmentedControls = z < 3 ? `
+      <div class="mode-segmented">
+        <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
+          <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
+          <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}">
+          <i class="ti ti-sparkles text-xs mr-0.5"></i> SMART (ความชื้นดิน)
+        </button>
+      </div>
+    ` : `
+      <div class="mode-segmented grid-cols-2">
+        <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
+          <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
+        </button>
+        <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
+          <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
+        </button>
+      </div>
+    `;
+
     card.innerHTML = `
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
-          <div class="w-9 h-9 rounded-xl ${isRunning ? 'bg-emerald-600 text-white animate-bounce' : 'bg-forest-100 text-forest-700'} flex items-center justify-center">
-            <i class="ti ti-droplet text-xl"></i>
+          <div class="w-9 h-9 rounded-xl ${isRunning ? 'bg-emerald-600 text-white animate-bounce' : (z === 3 ? 'bg-sky-100 text-sky-700' : 'bg-forest-100 text-forest-700')} flex items-center justify-center">
+            <i class="${z === 3 ? 'ti ti-droplet-half-2' : 'ti ti-droplet'} text-xl"></i>
           </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
-              <h4 class="font-bold text-sm text-slate-900 truncate" title="${getZoneName(z)}">${getZoneName(z)}</h4>
-              <button type="button" onclick="promptRenameZone(${z})" class="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition shrink-0" title="เปลี่ยนชื่อแปลงนี้">
-                <i class="ti ti-edit text-xs"></i>
-              </button>
-            </div>
+          <div>
+            <h4 class="font-bold text-sm text-slate-900">${ZONE_NAMES[z]}</h4>
             <span class="text-[11px] text-slate-400 font-medium">โหมดปัจจุบัน: <b>${MODE_NAMES[currentMode]}</b></span>
           </div>
         </div>
@@ -831,30 +794,20 @@ function renderZoneControls(data) {
               : currentMode === 0
                 ? '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-500">ปิด (OFF)</span>'
                 : currentMode === 1
-                  ? '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">แมนนวล (MANUAL)</span>'
-                  : '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-sky-50 text-sky-800 border border-sky-200">อัตโนมัติ (AUTO)</span>'
+                  ? '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">ตามเวลา (TIMER)</span>'
+                  : '<span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-sky-50 text-sky-800 border border-sky-200">ความชื้นดิน (SMART)</span>'
           }
         </div>
       </div>
 
-      <!-- 3-Way Mode Segmented Selector -->
+      <!-- Mode Segmented Selector -->
       <div class="my-2.5">
         <label class="text-[11px] font-semibold text-slate-600 block mb-1">เลือกโหมดการทำงาน:</label>
-        <div class="mode-segmented">
-          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
-            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
-            <i class="ti ti-hand-click text-xs mr-0.5"></i> MANUAL
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}">
-            <i class="ti ti-robot text-xs mr-0.5"></i> AUTO (อัตโนมัติ)
-          </button>
-        </div>
+        ${modeSegmentedControls}
       </div>
 
       <!-- Quick Metrics -->
-      <div class="grid grid-cols-${z < 3 ? '3' : '2'} gap-2 my-3">
+      <div class="grid grid-cols-3 gap-2 my-3">
         <div class="bg-surface-subtle p-2 rounded-xl text-center">
           <span class="text-[10px] text-slate-400 block">ใช้น้ำทั้งหมด</span>
           <span class="text-xs font-bold text-slate-800 font-mono">${(zone.waterUsed ?? 0).toFixed(2)} L</span>
@@ -906,7 +859,7 @@ function renderZoneControls(data) {
         </div>
       ` : `
         <div class="mt-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
-          <i class="ti ti-circle-off text-slate-400 mr-1"></i> โซนนี้ปิดการทำงานอยู่ (OFF) แตะ MANUAL หรือ AUTO เพื่อเปิดใช้งาน
+          <i class="ti ti-circle-off text-slate-400 mr-1"></i> โซนนี้ปิดการทำงานอยู่ (OFF) แตะ TIMER เพื่อเปิดใช้งาน
         </div>
       `}
     `;
@@ -915,73 +868,53 @@ function renderZoneControls(data) {
   }
 }
 
-// 3-Mode Zone Switcher [ OFF=0, MANUAL=1, AUTO=2 ]
+// 3-Mode Zone Switcher [ OFF=0, TIMER=1, SMART=2 ]
 function setZoneMode(zoneIndex, mode) {
-  state.zoneModes[zoneIndex] = mode;
-  state.pendingModeChanges = state.pendingModeChanges || {};
-  state.pendingModeChanges[zoneIndex] = { mode: mode, timestamp: Date.now() };
-
-  // Sync with schedule settings page if this zone is currently viewed
-  if (state.selectedZone === zoneIndex) {
-    const cfgModeEl = document.getElementById('cfgZoneMode');
-    if (cfgModeEl) cfgModeEl.value = mode;
-    const moistBox = document.getElementById('smartMoistureBox');
-    if (moistBox) {
-      if (mode === 2) moistBox.classList.remove('hidden');
-      else moistBox.classList.add('hidden');
-    }
+  // Zone 4 is drip irrigation (Timer only, no soil sensor) -> cannot be SMART (mode 2)
+  if (zoneIndex === 3 && mode === 2) {
+    mode = 1;
   }
+  state.zoneModes[zoneIndex] = mode;
+  const isEnabled = (mode !== 0);
 
-  // Optimistic UI Update across all zone surfaces
+  // Sync with state.configData as well
+  if (!state.configData) state.configData = { zones: [] };
+  if (!state.configData.zones) state.configData.zones = [];
+  if (!state.configData.zones[zoneIndex]) state.configData.zones[zoneIndex] = {};
+  state.configData.zones[zoneIndex].mode = mode;
+  state.configData.zones[zoneIndex].enabled = isEnabled;
+
+  // Optimistic UI Update across all views (Dashboard, Controls, Schedule)
   renderDashboardZoneCards(state.lastData?.zones || []);
   renderZoneControls(state.lastData);
+  renderScheduleSettings();
 
   const modeLabel = MODE_NAMES[mode];
   const zoneName = ZONE_SHORT_NAMES[zoneIndex];
 
-  // Send mode update to Firebase config with flat and nested keys + configVersion
-  const newConfigVersion = Math.floor(Date.now() / 1000);
-  const updates = {
-    [`zones/${zoneIndex}/mode`]: mode,
-    [`z${zoneIndex}_mode`]: mode,
-    configVersion: newConfigVersion
-  };
-
-  configRef.update(updates).catch((err) => {
+  // Send mode & enabled update to Firebase config (write both flat and nested keys + configVersion)
+  const tsSec = Math.floor(Date.now() / 1000);
+  const updates = {};
+  updates[`devices/esp32/config/z${zoneIndex}_mode`] = mode;
+  updates[`devices/esp32/config/z${zoneIndex}_enabled`] = isEnabled;
+  updates[`devices/esp32/config/zones/${zoneIndex}/mode`] = mode;
+  updates[`devices/esp32/config/zones/${zoneIndex}/enabled`] = isEnabled;
+  updates[`devices/esp32/config/configVersion`] = tsSec;
+  db.ref().update(updates).catch((err) => {
     handleFirebaseError(err, `setZoneMode(${zoneIndex}, ${mode})`);
   });
 
-  // If set to OFF, stop the valve immediately if running and send direct command to ESP32
+  // If set to OFF, stop the valve if it was running
   if (mode === 0) {
-    if (state.lastData?.zones?.[zoneIndex]) {
-      state.lastData.zones[zoneIndex].running = false;
-      state.lastData.zones[zoneIndex].remaining = 0;
-      renderDashboardZoneCards(state.lastData.zones);
-      renderZoneControls(state.lastData);
-    }
-    state.pendingStopActions = state.pendingStopActions || {};
-    state.pendingStopActions[zoneIndex] = Date.now();
-
     commandRef.set({
       manualZone: zoneIndex,
       manualAction: 'stop',
-      setMode: 0,
       manualDuration: 0,
-      timestamp: Date.now(),
+      timestamp: tsSec,
       source: 'web_app_mode_off'
     }).catch((err) => {
       handleFirebaseError(err, 'stop_valve_on_off_mode');
     });
-  } else {
-    // Send mode change command directly to ESP32 for immediate response
-    commandRef.set({
-      manualZone: zoneIndex,
-      manualAction: 'none',
-      setMode: mode,
-      manualDuration: 0,
-      timestamp: Date.now(),
-      source: 'web_app_mode_change'
-    }).catch(() => {});
   }
 
   Swal.fire({
@@ -1086,21 +1019,50 @@ function sendManualCommand(zone, action, duration) {
     renderZoneControls(state.lastData);
   }
 
-  if (action === 'stop') {
-    state.pendingStopActions = state.pendingStopActions || {};
-    state.pendingStopActions[zone] = Date.now();
-  }
-
   commandRef.set({
     manualZone: zone,
     manualAction: action,
     manualDuration: duration,
-    timestamp: Date.now(),
+    timestamp: Math.floor(Date.now() / 1000),
     source: 'web_app'
   }).catch((err) => {
     handleFirebaseError(err, `sendManualCommand(${zone}, ${action})`);
   });
 }
+
+// 4. Send Time Sync Command to ESP32 (Synchronizes RTC with exact Thailand Standard Time UTC+7)
+function syncTimeToEsp32(silent = false) {
+  const now = new Date();
+  const payload = {
+    setTime: true,
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    day: now.getDate(),
+    hour: now.getHours(),
+    minute: now.getMinutes(),
+    second: now.getSeconds(),
+    timestamp: Math.floor(Date.now() / 1000),
+    source: 'time_sync'
+  };
+
+  return commandRef.set(payload).then(() => {
+    state.rtcOffset = 0;
+    if (!silent && window.Swal) {
+      Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: 'ซิงค์เวลามาตรฐานประเทศไทยสำเร็จ',
+        text: `เวลา ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')} (UTC+7) ถูกส่งไปยัง ESP32 แล้ว`,
+        timer: 2500,
+        showConfirmButton: false
+      });
+    }
+  }).catch((err) => {
+    handleFirebaseError(err, 'syncTimeToEsp32');
+  });
+}
+window.syncTimeToEsp32 = syncTimeToEsp32;
 
 // ================================================================
 //  SCHEDULE & CONFIGURATION PAGE (Dynamic Slots + Add/Remove Slot)
@@ -1119,35 +1081,122 @@ document.querySelectorAll('#schedZoneSelector button').forEach(btn => {
 });
 
 function renderScheduleSettings() {
-  updateScheduleTabZoneButtons();
   const z = state.selectedZone;
+  let currentMode = state.zoneModes[z] ?? 1;
+  if (z === 3 && currentMode === 2) {
+    currentMode = 1;
+    state.zoneModes[z] = 1;
+  }
+
   const cfg = state.configData?.zones?.[z] || {
     enabled: true,
-    mode: state.zoneModes[z] ?? 1,
+    mode: currentMode,
     moistureStart: 35,
     moistureStop: 55,
   };
 
   // Inputs
-  const nameInput = document.getElementById('cfgZoneName');
   const enabledInput = document.getElementById('cfgZoneEnabled');
   const modeInput = document.getElementById('cfgZoneMode');
   const moistBox = document.getElementById('smartMoistureBox');
   const moistStartInput = document.getElementById('cfgMoistStart');
   const moistStopInput = document.getElementById('cfgMoistStop');
 
-  if (nameInput) nameInput.value = getZoneName(z);
-  if (enabledInput) enabledInput.checked = !!cfg.enabled;
-  if (modeInput) modeInput.value = state.zoneModes[z] ?? (cfg.mode ?? 1);
+  if (enabledInput) enabledInput.checked = (currentMode !== 0);
+  if (modeInput) modeInput.value = currentMode;
+
+  // Badge & Segmented Controls in Schedule Page
+  const modeBadgeEl = document.getElementById('cfgZoneModeBadge');
+  if (modeBadgeEl) {
+    if (currentMode === 0) {
+      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-500';
+      modeBadgeEl.textContent = 'ปิด (OFF)';
+    } else if (currentMode === 1) {
+      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200';
+      modeBadgeEl.textContent = 'ตามเวลา (TIMER)';
+    } else {
+      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-sky-50 text-sky-800 border border-sky-200';
+      modeBadgeEl.textContent = 'ความชื้นดิน (SMART)';
+    }
+  }
+
+  const segmentedContainer = document.getElementById('cfgZoneModeSegmented');
+  if (segmentedContainer) {
+    if (z < 3) {
+      segmentedContainer.innerHTML = `
+        <div class="mode-segmented">
+          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
+            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
+            <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}">
+            <i class="ti ti-sparkles text-xs mr-0.5"></i> SMART (ความชื้นดิน)
+          </button>
+        </div>
+      `;
+    } else {
+      segmentedContainer.innerHTML = `
+        <div class="mode-segmented grid-cols-2">
+          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
+            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
+          </button>
+          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
+            <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
+          </button>
+        </div>
+      `;
+    }
+  }
+
   if (moistStartInput) moistStartInput.value = cfg.moistureStart ?? 35;
   if (moistStopInput) moistStopInput.value = cfg.moistureStop ?? 55;
 
   if (moistBox) {
-    if (parseInt(modeInput.value) === 2) {
+    if (z < 3 && currentMode === 2) {
       moistBox.classList.remove('hidden');
     } else {
       moistBox.classList.add('hidden');
     }
+  }
+
+  // Selected Zone Status / Soil Moisture Banner
+  const bannerEl = document.getElementById('schedZoneBanner');
+  if (bannerEl) {
+    if (z === 3) {
+      bannerEl.innerHTML = `
+        <div class="p-3 bg-sky-50 border border-sky-200/90 rounded-2xl text-xs text-sky-900 flex items-start gap-2.5 shadow-2xs">
+          <i class="ti ti-droplet-half-2 text-sky-600 text-lg flex-shrink-0 mt-0.5"></i>
+          <div>
+            <span class="font-bold block text-sky-950">Zone 4 (ระบบน้ำหยด) — ตั้งเวลาเท่านั้น</span>
+            <p class="text-[11px] text-sky-700 mt-0.5 leading-relaxed">
+              โซนนี้เป็นระบบน้ำหยด ไม่มีเซ็นเซอร์วัดความชื้นดิน การทำงานจะเปิด-ปิดตาม<b>ตารางเวลา (TIMER)</b> ที่กำหนดไว้ด้านล่างนี้
+            </p>
+          </div>
+        </div>
+      `;
+    } else {
+      const sVal = state.lastData?.soil?.[z];
+      const sErr = state.lastData?.soilError?.[z] || sVal === null || sVal === undefined || isNaN(sVal) || sVal < 0;
+      const isConnected = !sErr && typeof sVal === 'number' && sVal >= 0;
+      bannerEl.innerHTML = `
+        <div class="p-2.5 bg-forest-50/70 border border-forest-100 rounded-2xl text-xs text-forest-900 flex items-center justify-between shadow-2xs">
+          <span class="flex items-center gap-1.5 font-semibold text-slate-700">
+            <i class="ti ti-seeding text-forest-700 text-base"></i> ความชื้นดิน ${ZONE_SHORT_NAMES[z]} ปัจจุบัน:
+          </span>
+          <span class="font-mono font-bold ${isConnected ? 'text-forest-800 text-sm' : 'text-slate-400 text-xs'}">
+            ${isConnected ? sVal.toFixed(0) + '%' : 'ไม่ได้เชื่อมต่อเซ็นเซอร์'}
+          </span>
+        </div>
+      `;
+    }
+  }
+
+  // Flow Protection setting
+  const fpEl = document.getElementById('cfgFlowProtection');
+  if (fpEl) {
+    fpEl.checked = !!state.configData?.flowProtection;
   }
 
   // Get active schedules for this zone
@@ -1159,20 +1208,52 @@ function renderScheduleSettings() {
 }
 
 document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
-  const val = parseInt(e.target.value);
-  const z = state.selectedZone;
-  state.zoneModes[z] = val;
+  let val = parseInt(e.target.value);
+  if (state.selectedZone === 3 && val === 2) {
+    val = 1;
+  }
+  state.zoneModes[state.selectedZone] = val;
+
+  // Update in memory config
+  if (!state.configData) state.configData = { zones: [] };
+  if (!state.configData.zones) state.configData.zones = [];
+  if (!state.configData.zones[state.selectedZone]) state.configData.zones[state.selectedZone] = {};
+  state.configData.zones[state.selectedZone].mode = val;
+
   const moistBox = document.getElementById('smartMoistureBox');
   if (moistBox) {
-    if (val === 2) {
+    if (val === 2 && state.selectedZone < 3) {
       moistBox.classList.remove('hidden');
     } else {
       moistBox.classList.add('hidden');
     }
   }
-  // Immediately synchronize zone controls & dashboard cards
+
+  // Update dashboard and control cards simultaneously
   renderDashboardZoneCards(state.lastData?.zones || []);
   renderZoneControls(state.lastData);
+});
+
+// Auto-sync moisture threshold inputs to Firebase when changed
+['cfgMoistStart', 'cfgMoistStop'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', () => {
+    const z = state.selectedZone;
+    const startVal = parseInt(document.getElementById('cfgMoistStart')?.value) || 35;
+    const stopVal = parseInt(document.getElementById('cfgMoistStop')?.value) || 55;
+    if (!state.configData) state.configData = { zones: [] };
+    if (!state.configData.zones) state.configData.zones = [];
+    if (!state.configData.zones[z]) state.configData.zones[z] = {};
+    state.configData.zones[z].moistureStart = startVal;
+    state.configData.zones[z].moistureStop = stopVal;
+
+    const updates = {};
+    updates[`devices/esp32/config/z${z}_moistStart`] = startVal;
+    updates[`devices/esp32/config/z${z}_moistStop`] = stopVal;
+    updates[`devices/esp32/config/zones/${z}/moistureStart`] = startVal;
+    updates[`devices/esp32/config/zones/${z}/moistureStop`] = stopVal;
+    updates[`devices/esp32/config/configVersion`] = Math.floor(Date.now() / 1000);
+    db.ref().update(updates).catch(err => handleFirebaseError(err, 'updateMoistureThresholds'));
+  });
 });
 
 // Render dynamic schedule slots (Show ONLY active slots, not all 4 hardcoded)
@@ -1237,12 +1318,30 @@ function renderScheduleSlots(schedules) {
 
       <!-- Time Picker & Duration Stepper (Mobile Touch Friendly) -->
       <div class="grid grid-cols-2 gap-3">
-        <!-- Time Picker with Clock Icon -->
+        <!-- 24-Hour Time Picker (No AM/PM) -->
         <div>
-          <label class="text-[11px] font-semibold text-slate-600 block mb-1">เวลาเริ่มรดน้ำ:</label>
-          <div class="relative">
-            <input type="time" id="schTime_${s}" value="${timeStr}" onchange="updateScheduleSlotState(${s})" class="w-full bg-surface-subtle border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-forest-500">
+          <label class="text-[11px] font-semibold text-slate-600 block mb-1">
+            <i class="ti ti-clock text-xs text-forest-600 mr-0.5"></i> เวลาเริ่ม (ระบบ 24 ชม.):
+          </label>
+          <div class="flex items-center gap-1 bg-surface-subtle border border-slate-200 rounded-xl p-1 focus-within:ring-2 focus-within:ring-forest-500">
+            <!-- Hour Select (00-23) -->
+            <select id="schHour_${s}" onchange="updateScheduleSlotState(${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1.5 px-1 text-center text-xs font-bold text-slate-800 outline-none cursor-pointer focus:border-forest-500">
+              ${Array.from({length: 24}, (_, i) => {
+                const hStr = String(i).padStart(2, '0');
+                return `<option value="${i}" ${sch.hour === i ? 'selected' : ''}>${hStr}</option>`;
+              }).join('')}
+            </select>
+            <span class="font-bold text-slate-400 text-xs">:</span>
+            <!-- Minute Select (00-59) -->
+            <select id="schMin_${s}" onchange="updateScheduleSlotState(${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1.5 px-1 text-center text-xs font-bold text-slate-800 outline-none cursor-pointer focus:border-forest-500">
+              ${Array.from({length: 60}, (_, i) => {
+                const mStr = String(i).padStart(2, '0');
+                return `<option value="${i}" ${sch.minute === i ? 'selected' : ''}>${mStr}</option>`;
+              }).join('')}
+            </select>
+            <span class="text-[10px] font-bold text-slate-500 pr-1 select-none">น.</span>
           </div>
+          <input type="hidden" id="schTime_${s}" value="${timeStr}">
         </div>
 
         <!-- Duration Stepper [-] 10 นาที [+] -->
@@ -1254,7 +1353,7 @@ function renderScheduleSlots(schedules) {
             </button>
             <div class="flex-1 text-center bg-surface-subtle border border-slate-200 rounded-xl py-1.5">
               <span id="schDurDisplay_${s}" class="font-bold text-xs text-slate-800">${sch.duration || 10}</span>
-              <span class="text-[10px] text-slate-500 ml-0.5">น.</span>
+              <span class="text-[10px] text-slate-500 ml-0.5 font-bold">นาที</span>
               <input type="hidden" id="schDur_${s}" value="${sch.duration || 10}">
             </div>
             <button type="button" onclick="stepScheduleDuration(${s}, 1)" class="stepper-btn" title="เพิ่ม 1 นาที">
@@ -1264,14 +1363,29 @@ function renderScheduleSlots(schedules) {
         </div>
       </div>
 
-      <!-- Quick Duration Chips -->
-      <div class="flex items-center gap-1.5 pt-0.5">
-        <span class="text-[10px] text-slate-400">ด่วน:</span>
-        ${[5, 10, 15, 20, 30].map(m => `
-          <button type="button" onclick="setScheduleDuration(${s}, ${m})" class="px-2 py-0.5 text-[10px] font-semibold rounded-lg bg-slate-100 hover:bg-emerald-100 hover:text-forest-800 text-slate-600 transition">
-            ${m}น.
-          </button>
-        `).join('')}
+      <!-- Quick Preset Chips: Time & Duration -->
+      <div class="flex flex-wrap items-center justify-between gap-y-1 gap-x-2 pt-0.5">
+        <div class="flex items-center gap-1">
+          <span class="text-[10px] text-slate-400">เวลาด่วน:</span>
+          ${[
+            { label: '06:00', h: 6, m: 0 },
+            { label: '12:00', h: 12, m: 0 },
+            { label: '17:00', h: 17, m: 0 },
+            { label: '20:00', h: 20, m: 0 }
+          ].map(p => `
+            <button type="button" onclick="setScheduleTimePreset(${s}, ${p.h}, ${p.m})" class="px-1.5 py-0.5 text-[10px] font-semibold rounded-md bg-slate-100 hover:bg-forest-100 hover:text-forest-800 text-slate-600 transition">
+              ${p.label}
+            </button>
+          `).join('')}
+        </div>
+        <div class="flex items-center gap-1">
+          <span class="text-[10px] text-slate-400">ระยะเวลา:</span>
+          ${[5, 10, 15, 20, 30].map(m => `
+            <button type="button" onclick="setScheduleDuration(${s}, ${m})" class="px-1.5 py-0.5 text-[10px] font-semibold rounded-md bg-slate-100 hover:bg-emerald-100 hover:text-forest-800 text-slate-600 transition">
+              ${m} นาที
+            </button>
+          `).join('')}
+        </div>
       </div>
 
       <!-- 7 Days of the Week (Touch Friendly Circular Chips) -->
@@ -1383,18 +1497,44 @@ function setScheduleDuration(slotIndex, minutes) {
   if (input) input.value = minutes;
 }
 
+// Quick 24h Time Preset (e.g. 06:00, 12:00, 17:00, 20:00)
+function setScheduleTimePreset(slotIndex, hour, minute) {
+  const hEl = document.getElementById(`schHour_${slotIndex}`);
+  const mEl = document.getElementById(`schMin_${slotIndex}`);
+  if (hEl) hEl.value = hour;
+  if (mEl) mEl.value = minute;
+  updateScheduleSlotState(slotIndex);
+}
+
 // Update slot in memory when inputs change
 function updateScheduleSlotState(slotIndex) {
   const z = state.selectedZone;
   if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
 
   const enabled = document.getElementById(`schEnabled_${slotIndex}`)?.checked ?? true;
-  const timeVal = document.getElementById(`schTime_${slotIndex}`)?.value || '06:00';
-  const [h, m] = timeVal.split(':').map(Number);
+  const hEl = document.getElementById(`schHour_${slotIndex}`);
+  const mEl = document.getElementById(`schMin_${slotIndex}`);
+
+  let h = 6;
+  let m = 0;
+  if (hEl && mEl) {
+    h = parseInt(hEl.value, 10);
+    m = parseInt(mEl.value, 10);
+  } else {
+    const timeVal = document.getElementById(`schTime_${slotIndex}`)?.value || '06:00';
+    const parts = timeVal.split(':').map(Number);
+    h = parts[0] || 0;
+    m = parts[1] || 0;
+  }
 
   state.zoneSchedules[z][slotIndex].enabled = enabled;
-  state.zoneSchedules[z][slotIndex].hour = h;
-  state.zoneSchedules[z][slotIndex].minute = m;
+  state.zoneSchedules[z][slotIndex].hour = isNaN(h) ? 0 : h;
+  state.zoneSchedules[z][slotIndex].minute = isNaN(m) ? 0 : m;
+
+  const hidden = document.getElementById(`schTime_${slotIndex}`);
+  if (hidden) {
+    hidden.value = `${String(state.zoneSchedules[z][slotIndex].hour).padStart(2, '0')}:${String(state.zoneSchedules[z][slotIndex].minute).padStart(2, '0')}`;
+  }
 }
 
 // Toggle active day chip
@@ -1419,8 +1559,8 @@ function toggleScheduleDay(slotIndex, dayIndex) {
 // Save Config Handler (Sync with Firebase + Optimistic UI)
 document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
   const z = state.selectedZone;
-  const enabled = document.getElementById('cfgZoneEnabled').checked;
-  const mode = parseInt(document.getElementById('cfgZoneMode').value);
+  const mode = state.zoneModes[z] ?? 1;
+  const enabled = (mode !== 0);
   const moistureStart = parseInt(document.getElementById('cfgMoistStart').value) || 35;
   const moistureStop = parseInt(document.getElementById('cfgMoistStop').value) || 55;
 
@@ -1431,8 +1571,23 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
     if (s < activeList.length) {
       const sch = activeList[s];
       const sEnabled = document.getElementById(`schEnabled_${s}`)?.checked ?? sch.enabled;
-      const timeVal = document.getElementById(`schTime_${s}`)?.value || `${String(sch.hour).padStart(2,'0')}:${String(sch.minute).padStart(2,'0')}`;
-      const [h, m] = timeVal.split(':').map(Number);
+      
+      let h = sch.hour;
+      let m = sch.minute;
+      const hEl = document.getElementById(`schHour_${s}`);
+      const mEl = document.getElementById(`schMin_${s}`);
+      if (hEl && mEl) {
+        h = parseInt(hEl.value, 10);
+        m = parseInt(mEl.value, 10);
+      } else {
+        const timeVal = document.getElementById(`schTime_${s}`)?.value;
+        if (timeVal) {
+          const parts = timeVal.split(':').map(Number);
+          h = parts[0];
+          m = parts[1];
+        }
+      }
+
       const duration = parseInt(document.getElementById(`schDur_${s}`)?.value) || sch.duration || 10;
 
       let daysBit = 0;
@@ -1470,71 +1625,73 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
     schedules: schedulesToSave
   };
 
-  // Save custom zone name if edited in input field
-  const typedName = document.getElementById('cfgZoneName')?.value.trim();
-  if (typedName && typedName !== getZoneName(z)) {
-    saveCustomZoneName(z, typedName, false);
-  }
-
   // Update memory state
   state.zoneModes[z] = mode;
+  if (!state.configData) state.configData = { zones: [] };
+  if (!state.configData.zones) state.configData.zones = [];
+  state.configData.zones[z] = zoneConfig;
+
+  // Immediately reflect across all views
   renderDashboardZoneCards(state.lastData?.zones || []);
   renderZoneControls(state.lastData);
 
-  // If set to OFF, stop the valve if running
-  if (mode === 0) {
-    if (state.lastData?.zones?.[z]) {
-      state.lastData.zones[z].running = false;
-      state.lastData.zones[z].remaining = 0;
-      renderDashboardZoneCards(state.lastData.zones);
-      renderZoneControls(state.lastData);
-    }
-    state.pendingStopActions = state.pendingStopActions || {};
-    state.pendingStopActions[z] = Date.now();
-
-    commandRef.set({
-      manualZone: z,
-      manualAction: 'stop',
-      setMode: 0,
-      manualDuration: 0,
-      timestamp: Date.now(),
-      source: 'web_app_mode_off_save'
-    }).catch((err) => {
-      handleFirebaseError(err, 'stop_valve_on_save_config');
-    });
-  }
-
-  // Build updates with both nested structure and flat ESP32 keys + configVersion
-  const newVersion = Math.floor(Date.now() / 1000);
-  const updates = {
-    [`zones/${z}`]: zoneConfig,
-    [`z${z}_enabled`]: enabled,
-    [`z${z}_mode`]: mode,
-    [`z${z}_moistStart`]: moistureStart,
-    [`z${z}_moistStop`]: moistureStop,
-    configVersion: newVersion
-  };
-
+  // Write to Firebase (Write both nested object and flat keys for ESP32)
+  const tsSec = Math.floor(Date.now() / 1000);
+  const updates = {};
+  updates[`devices/esp32/config/zones/${z}`] = zoneConfig;
+  updates[`devices/esp32/config/z${z}_enabled`] = enabled;
+  updates[`devices/esp32/config/z${z}_mode`] = mode;
+  updates[`devices/esp32/config/z${z}_moistStart`] = moistureStart;
+  updates[`devices/esp32/config/z${z}_moistStop`] = moistureStop;
   for (let s = 0; s < 4; s++) {
-    const sch = schedulesToSave[s];
-    updates[`z${z}_s${s}_en`] = sch.enabled;
-    updates[`z${z}_s${s}_h`] = sch.hour;
-    updates[`z${z}_s${s}_m`] = sch.minute;
-    updates[`z${z}_s${s}_dur`] = sch.duration;
-    updates[`z${z}_s${s}_days`] = sch.days;
+    const sc = schedulesToSave[s] || { enabled: false, hour: 0, minute: 0, duration: 0, days: 0 };
+    updates[`devices/esp32/config/z${z}_s${s}_en`] = sc.enabled ?? false;
+    updates[`devices/esp32/config/z${z}_s${s}_h`] = sc.hour ?? 0;
+    updates[`devices/esp32/config/z${z}_s${s}_m`] = sc.minute ?? 0;
+    updates[`devices/esp32/config/z${z}_s${s}_dur`] = sc.duration ?? 0;
+    updates[`devices/esp32/config/z${z}_s${s}_days`] = sc.days ?? 0;
+  }
+  const flowProtection = document.getElementById('cfgFlowProtection')?.checked ?? false;
+  updates[`devices/esp32/config/flowProtection`] = flowProtection;
+  if (!state.configData) state.configData = {};
+  state.configData.flowProtection = flowProtection;
+
+  updates[`devices/esp32/config/configVersion`] = tsSec;
+
+  // Button instant visual feedback (0ms latency!)
+  const btn = document.getElementById('btnSaveConfig');
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.innerHTML = '<i class="ti ti-check text-lg"></i> บันทึกแล้ว กำลังซิงค์...';
+    btn.classList.add('bg-emerald-600');
+    btn.classList.remove('bg-forest-700');
   }
 
-  // Write to Firebase
-  configRef.update(updates).then(() => {
-    Swal.fire({
-      toast: true,
-      position: 'top',
-      icon: 'success',
-      title: `บันทึกการตั้งค่า ${ZONE_SHORT_NAMES[z]} สำเร็จ 🌿`,
-      showConfirmButton: false,
-      timer: 2500
-    });
+  // Toast feedback instantly without waiting on network
+  Swal.fire({
+    toast: true,
+    position: 'top',
+    icon: 'success',
+    title: `บันทึกการตั้งค่า ${ZONE_SHORT_NAMES[z]} สำเร็จ 🌿`,
+    text: 'การตั้งค่ามีผลทันที และส่งไปยังบอร์ดแล้ว',
+    showConfirmButton: false,
+    timer: 1800
+  });
+
+  db.ref().update(updates).then(() => {
+    if (btn) {
+      setTimeout(() => {
+        btn.innerHTML = origHtml;
+        btn.classList.remove('bg-emerald-600');
+        btn.classList.add('bg-forest-700');
+      }, 700);
+    }
   }).catch((err) => {
+    if (btn) {
+      btn.innerHTML = origHtml;
+      btn.classList.remove('bg-emerald-600');
+      btn.classList.add('bg-forest-700');
+    }
     handleFirebaseError(err, `saveZoneConfig(${z})`);
   });
 });
@@ -1600,85 +1757,120 @@ function initHistoricalChart() {
   updateChartSummaryText(state.chartMetric, state.chartRange);
 }
 
-function getChartDataset(metric, range) {
-  // Check if real telemetry records exist in Firebase
-  const hasRealData = state.firebaseHistory && state.firebaseHistory.length >= 2;
-
-  let labels = [];
-  let tempPoints = [];
-  let humidPoints = [];
-  let soil0Points = [];
-  let soil1Points = [];
-  let soil2Points = [];
-  let waterPoints = [];
-  let flowPoints = [];
-
-  if (hasRealData) {
-    let records = [...state.firebaseHistory];
-    if (range === '24h') {
-      records = records.slice(-12);
-    } else if (range === '7d') {
-      records = records.slice(-28);
-    } else if (range === '30d') {
-      records = records.slice(-60);
-    } else {
-      records = records.slice(-120);
-    }
-
-    labels = records.map(r => r.time || (r.date ? r.date.slice(5) : ''));
-    tempPoints = records.map(r => r.temperature ?? 28);
-    humidPoints = records.map(r => r.humidity ?? 70);
-    soil0Points = records.map(r => r.soil?.[0] ?? 50);
-    soil1Points = records.map(r => r.soil?.[1] ?? 50);
-    soil2Points = records.map(r => r.soil?.[2] ?? 50);
-    waterPoints = records.map(r => r.waterTotal ?? 0);
-    flowPoints = records.map(r => r.flowRate ?? 0);
-  } else {
-    // Realistic initial baseline points for 1 วัน (24h), 1 สัปดาห์ (7d), 1 เดือน (30d), 3 เดือน (90d)
-    if (range === '24h') {
-      labels = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', 'ตอนนี้'];
-      tempPoints = [26.2, 25.5, 25.0, 28.4, 32.5, 33.1, 30.0, 27.8, 28.5];
-      humidPoints = [78, 82, 85, 72, 60, 58, 67, 74, 72];
-      soil0Points = [48, 45, 68, 62, 55, 48, 70, 64, 58];
-      soil1Points = [52, 50, 48, 72, 66, 58, 54, 75, 68];
-      soil2Points = [42, 40, 38, 65, 58, 50, 46, 68, 60];
-      waterPoints = [0, 0, 4.2, 0, 1.5, 0, 5.8, 0, 2.1];
-      flowPoints = [0, 0, 1.8, 0, 0.5, 0, 2.2, 0, 1.4];
-    } else if (range === '7d') {
-      labels = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์', 'อาทิตย์'];
-      tempPoints = [28.1, 29.2, 31.0, 30.5, 29.8, 28.6, 29.4];
-      humidPoints = [72, 68, 65, 70, 75, 78, 71];
-      soil0Points = [55, 60, 58, 62, 65, 59, 61];
-      soil1Points = [62, 65, 61, 64, 68, 63, 66];
-      soil2Points = [48, 52, 50, 55, 58, 54, 56];
-      waterPoints = [14.2, 16.5, 12.8, 18.0, 15.4, 13.9, 16.2];
-      flowPoints = [1.8, 1.9, 1.6, 2.1, 1.7, 1.5, 1.8];
-    } else if (range === '30d') {
-      labels = ['วันที่ 1', 'วันที่ 5', 'วันที่ 10', 'วันที่ 15', 'วันที่ 20', 'วันที่ 25', 'วันที่ 30'];
-      tempPoints = [27.5, 28.2, 29.0, 31.4, 30.1, 28.8, 29.2];
-      humidPoints = [75, 72, 68, 64, 70, 74, 71];
-      soil0Points = [58, 62, 60, 65, 63, 66, 64];
-      soil1Points = [62, 64, 61, 67, 65, 68, 66];
-      soil2Points = [50, 54, 52, 57, 55, 59, 56];
-      waterPoints = [14.5, 16.2, 18.0, 15.8, 17.1, 16.5, 15.9];
-      flowPoints = [1.7, 1.8, 1.9, 1.7, 1.8, 1.9, 1.8];
-    } else {
-      // 90d (3 เดือน)
-      labels = ['สัปดาห์ 1-2', 'สัปดาห์ 3-4', 'สัปดาห์ 5-6', 'สัปดาห์ 7-8', 'สัปดาห์ 9-10', 'สัปดาห์ 11-12'];
-      tempPoints = [28.0, 28.6, 29.5, 30.8, 30.2, 29.1];
-      humidPoints = [73, 71, 66, 63, 68, 72];
-      soil0Points = [60, 61, 63, 64, 65, 63];
-      soil1Points = [63, 65, 66, 67, 68, 66];
-      soil2Points = [52, 53, 55, 56, 57, 55];
-      waterPoints = [98.4, 105.2, 112.0, 108.5, 114.0, 106.8];
-      flowPoints = [1.75, 1.80, 1.85, 1.82, 1.84, 1.80];
+// Helper to parse true epoch timestamp from record
+function getRecordTimestamp(r) {
+  if (r && r.date && r.time) {
+    const timePart = r.time.length === 5 ? r.time + ':00' : r.time;
+    const parsed = Date.parse(`${r.date}T${timePart}+07:00`);
+    if (!isNaN(parsed) && parsed > 1700000000000) {
+      return parsed;
     }
   }
+  if (r && typeof r.timestamp === 'number' && r.timestamp > 1700000000000) {
+    return r.timestamp;
+  }
+  return 0;
+}
 
-  // Save in memory for dynamic average calculation
-  state.currentChartDataset = {
-    tempPoints, humidPoints, soil0Points, soil1Points, soil2Points, waterPoints, flowPoints
-  };
+const THAI_MONTH_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function formatRecordLabel(r, isMultiDay) {
+  const timeStr = r.time ? r.time.slice(0, 5) : '';
+  if (!isMultiDay) {
+    return timeStr || '--:--';
+  }
+  if (r.date) {
+    const parts = r.date.split('-');
+    if (parts.length === 3) {
+      const day = parseInt(parts[2], 10);
+      const mIdx = parseInt(parts[1], 10) - 1;
+      const mName = THAI_MONTH_SHORT[mIdx] || '';
+      return `${day} ${mName} ${timeStr}`;
+    }
+  }
+  return `${r.date} ${timeStr}`;
+}
+
+function getFilteredHistory(range) {
+  const raw = state.firebaseHistory || [];
+  // 1. Filter out corrupt / placeholder records (0000, 2000, 2024, temp <= 0)
+  const valid = raw.filter(r => {
+    if (!r || typeof r !== 'object') return false;
+    if (!r.date || r.date.startsWith('0000') || r.date.startsWith('2000') || r.date.startsWith('2024')) return false;
+    if (typeof r.temperature !== 'number' || isNaN(r.temperature) || r.temperature <= 0 || r.temperature > 80) return false;
+    return true;
+  });
+
+  if (valid.length === 0) return [];
+
+  // 2. Sort chronologically
+  valid.sort((a, b) => getRecordTimestamp(a) - getRecordTimestamp(b));
+
+  // 3. Filter by range
+  const latestTs = getRecordTimestamp(valid[valid.length - 1]);
+  const now = Math.max(Date.now(), latestTs);
+
+  let cutoff = 0;
+  if (range === '1d') {
+    cutoff = latestTs - (24 * 3600 * 1000);
+  } else if (range === '1w') {
+    cutoff = now - (7 * 86400 * 1000);
+  } else if (range === '1m') {
+    cutoff = now - (30 * 86400 * 1000);
+  } else {
+    cutoff = now - (90 * 86400 * 1000);
+  }
+
+  let filtered = valid.filter(r => getRecordTimestamp(r) >= cutoff);
+  if (filtered.length === 0 && range === '1d' && valid.length > 0) {
+    const latestDate = valid[valid.length - 1].date;
+    filtered = valid.filter(r => r.date === latestDate);
+  }
+
+  return filtered;
+}
+
+function getChartDataset(metric, range) {
+  const records = getFilteredHistory(range);
+  const isMultiDay = range !== '1d';
+
+  if (records.length === 0) {
+    return {
+      type: 'line',
+      beginAtZero: false,
+      data: {
+        labels: ['ยังไม่มีข้อมูลประวัติ'],
+        datasets: [
+          {
+            label: 'ไม่มีข้อมูลประวัติบันทึกจริง',
+            data: [null],
+            borderColor: '#cbd5e1',
+            borderDash: [5, 5],
+            fill: false
+          }
+        ]
+      }
+    };
+  }
+
+  // Downsample if more than 50 points to prevent label crowding
+  let displayRecords = records;
+  if (records.length > 50) {
+    const step = Math.ceil(records.length / 40);
+    displayRecords = records.filter((_, idx) => idx % step === 0 || idx === records.length - 1);
+  }
+
+  const labels = displayRecords.map(r => formatRecordLabel(r, isMultiDay));
+  const tempPoints = displayRecords.map(r => typeof r.temperature === 'number' ? parseFloat(r.temperature.toFixed(1)) : null);
+  const humidPoints = displayRecords.map(r => typeof r.humidity === 'number' ? parseFloat(r.humidity.toFixed(1)) : null);
+
+  // Real soil data: null if disconnected (< 0), never fake numbers
+  const soil0Points = displayRecords.map(r => (r.soil && typeof r.soil[0] === 'number' && r.soil[0] >= 0) ? r.soil[0] : null);
+  const soil1Points = displayRecords.map(r => (r.soil && typeof r.soil[1] === 'number' && r.soil[1] >= 0) ? r.soil[1] : null);
+  const soil2Points = displayRecords.map(r => (r.soil && typeof r.soil[2] === 'number' && r.soil[2] >= 0) ? r.soil[2] : null);
+
+  const waterPoints = displayRecords.map(r => typeof r.waterTotal === 'number' ? parseFloat(r.waterTotal.toFixed(2)) : 0);
+  const flowPoints = displayRecords.map(r => typeof r.flowRate === 'number' ? parseFloat(r.flowRate.toFixed(2)) : 0);
 
   if (metric === 'env') {
     return {
@@ -1695,7 +1887,8 @@ function getChartDataset(metric, range) {
             tension: 0.35,
             fill: false,
             borderWidth: 2.5,
-            pointRadius: 3
+            pointRadius: displayRecords.length > 25 ? 2 : 3.5,
+            spanGaps: true
           },
           {
             label: 'ความชื้นอากาศ (%)',
@@ -1705,7 +1898,8 @@ function getChartDataset(metric, range) {
             tension: 0.35,
             fill: true,
             borderWidth: 2.5,
-            pointRadius: 3
+            pointRadius: displayRecords.length > 25 ? 2 : 3.5,
+            spanGaps: true
           }
         ]
       }
@@ -1718,31 +1912,34 @@ function getChartDataset(metric, range) {
         labels: labels,
         datasets: [
           {
-            label: 'Zone 1 ดิน (%)',
+            label: 'Zone 1 ความชื้นดิน (%)',
             data: soil0Points,
             borderColor: '#10b981',
             tension: 0.35,
             fill: false,
             borderWidth: 2.5,
-            pointRadius: 3
+            pointRadius: 3,
+            spanGaps: false
           },
           {
-            label: 'Zone 2 ดิน (%)',
+            label: 'Zone 2 ความชื้นดิน (%)',
             data: soil1Points,
             borderColor: '#0d9488',
             tension: 0.35,
             fill: false,
             borderWidth: 2.5,
-            pointRadius: 3
+            pointRadius: 3,
+            spanGaps: false
           },
           {
-            label: 'Zone 3 ดิน (%)',
+            label: 'Zone 3 ความชื้นดิน (%)',
             data: soil2Points,
             borderColor: '#65a30d',
             tension: 0.35,
             fill: false,
             borderWidth: 2.5,
-            pointRadius: 3
+            pointRadius: 3,
+            spanGaps: false
           }
         ]
       }
@@ -1757,14 +1954,14 @@ function getChartDataset(metric, range) {
         datasets: [
           {
             type: 'bar',
-            label: 'ปริมาณน้ำใช้วันนี้ (L)',
+            label: 'ปริมาณน้ำสะสม (L)',
             data: waterPoints,
             backgroundColor: 'rgba(21, 128, 61, 0.75)',
             borderRadius: 6
           },
           {
             type: 'line',
-            label: 'อัตราการไหลเฉลี่ย (L/m)',
+            label: 'อัตราการไหล (L/m)',
             data: flowPoints,
             borderColor: '#0284c7',
             tension: 0.3,
@@ -1779,18 +1976,18 @@ function getChartDataset(metric, range) {
 
 // Auto-record telemetry snapshot from live status (Every 10 minutes)
 function recordTelemetrySnapshot(data) {
-  if (!data || typeof data.temperature !== 'number') return;
+  if (!data || typeof data.temperature !== 'number' || isNaN(data.temperature) || data.temperature <= 0) return;
   const now = Date.now();
   if (state.lastHistoryRecordTime && (now - state.lastHistoryRecordTime < 10 * 60 * 1000)) return;
   state.lastHistoryRecordTime = now;
 
   const item = {
     timestamp: now,
-    time: data.time || new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }),
+    time: data.time || new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false }),
     date: data.date || new Date().toISOString().slice(0, 10),
     temperature: parseFloat(data.temperature.toFixed(1)),
     humidity: parseFloat(data.humidity.toFixed(1)),
-    soil: data.soil || [0, 0, 0],
+    soil: data.soil || [-1, -1, -1],
     waterTotal: data.flow?.total || 0,
     flowRate: data.flow?.rate || 0
   };
@@ -1823,20 +2020,14 @@ function changeChartMetric(metric) {
 function changeChartRange(range) {
   state.chartRange = range;
 
-  const btnMap = {
-    '24h': 'btnRange24h',
-    '7d': 'btnRange7d',
-    '30d': 'btnRange30d',
-    '90d': 'btnRange90d'
-  };
-
-  Object.entries(btnMap).forEach(([r, id]) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (r === range) {
-      el.className = 'px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition whitespace-nowrap';
-    } else {
-      el.className = 'px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition whitespace-nowrap font-medium';
+  ['1d', '1w', '1m', '3m'].forEach(r => {
+    const btn = document.getElementById(`btnRange${r}`);
+    if (btn) {
+      if (r === range) {
+        btn.className = 'px-2 py-0.5 rounded-lg bg-white text-forest-700 shadow-2xs font-bold transition';
+      } else {
+        btn.className = 'px-2 py-0.5 rounded-lg text-slate-500 hover:text-slate-800 transition font-medium';
+      }
     }
   });
 
@@ -1847,81 +2038,91 @@ function updateChartSummaryText(metric, range) {
   const summaryEl = document.getElementById('chartSummaryText');
   if (!summaryEl) return;
 
-  const d = state.currentChartDataset;
   const rangeLabels = {
-    '24h': '24 ชม. ล่าสุด',
-    '7d': '7 วันย้อนหลัง',
-    '30d': '1 เดือนย้อนหลัง',
-    '90d': '3 เดือนย้อนหลัง'
+    '1d': '24 ชม. ล่าสุด',
+    '1w': '7 วันที่ผ่านมา',
+    '1m': '1 เดือนที่ผ่านมา',
+    '3m': '3 เดือนย้อนหลัง'
   };
-  const rLabel = rangeLabels[range] || range;
+  const rangeText = rangeLabels[range] || '24 ชม. ล่าสุด';
 
-  if (d && d.tempPoints && d.tempPoints.length > 0) {
-    if (metric === 'env') {
-      const avgT = (d.tempPoints.reduce((a, b) => a + b, 0) / d.tempPoints.length).toFixed(1);
-      const avgH = (d.humidPoints.reduce((a, b) => a + b, 0) / d.humidPoints.length).toFixed(0);
-      summaryEl.textContent = `อุณหภูมิเฉลี่ย ${avgT}°C • ความชื้นสัมพัทธ์เฉลี่ย ${avgH}% (${rLabel})`;
-    } else if (metric === 'soil') {
-      const avgS0 = (d.soil0Points.reduce((a, b) => a + b, 0) / d.soil0Points.length).toFixed(0);
-      const avgS1 = (d.soil1Points.reduce((a, b) => a + b, 0) / d.soil1Points.length).toFixed(0);
-      const avgS2 = (d.soil2Points.reduce((a, b) => a + b, 0) / d.soil2Points.length).toFixed(0);
-      summaryEl.textContent = `ความชื้นดินเฉลี่ย: Z1: ${avgS0}% • Z2: ${avgS1}% • Z3: ${avgS2}% (${rLabel})`;
+  const records = getFilteredHistory(range);
+  if (records.length === 0) {
+    summaryEl.textContent = `ยังไม่มีข้อมูลประวัติบันทึกจริงในช่วงเวลานี้ (${rangeText})`;
+    return;
+  }
+
+  if (metric === 'env') {
+    const temps = records.map(r => r.temperature).filter(t => typeof t === 'number' && !isNaN(t));
+    const humids = records.map(r => r.humidity).filter(h => typeof h === 'number' && !isNaN(h));
+    
+    const avgT = (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
+    const minT = Math.min(...temps).toFixed(1);
+    const maxT = Math.max(...temps).toFixed(1);
+    const avgH = Math.round(humids.reduce((a, b) => a + b, 0) / humids.length);
+
+    summaryEl.textContent = `อุณหภูมิเฉลี่ย ${avgT}°C (${minT} - ${maxT}°C) • ความชื้นเฉลี่ย ${avgH}% (${rangeText})`;
+  } else if (metric === 'soil') {
+    const valid0 = records.filter(r => r.soil && typeof r.soil[0] === 'number' && r.soil[0] >= 0).map(r => r.soil[0]);
+    const valid1 = records.filter(r => r.soil && typeof r.soil[1] === 'number' && r.soil[1] >= 0).map(r => r.soil[1]);
+    const valid2 = records.filter(r => r.soil && typeof r.soil[2] === 'number' && r.soil[2] >= 0).map(r => r.soil[2]);
+
+    if (valid0.length === 0 && valid1.length === 0 && valid2.length === 0) {
+      summaryEl.textContent = `เซ็นเซอร์ความชื้นดินยังไม่ได้เชื่อมต่อ (สถานะ: Disconnected) • ${rangeText}`;
     } else {
-      const totalW = d.waterPoints.reduce((a, b) => a + b, 0).toFixed(1);
-      const avgF = (d.flowPoints.reduce((a, b) => a + b, 0) / d.flowPoints.length).toFixed(2);
-      summaryEl.textContent = `ปริมาณน้ำรวม: ${totalW} L • อัตราไหลเฉลี่ย ${avgF} L/m (${rLabel})`;
+      const p0 = valid0.length ? `${(valid0.reduce((a, b) => a + b, 0) / valid0.length).toFixed(0)}%` : 'ไม่ต่อ';
+      const p1 = valid1.length ? `${(valid1.reduce((a, b) => a + b, 0) / valid1.length).toFixed(0)}%` : 'ไม่ต่อ';
+      const p2 = valid2.length ? `${(valid2.reduce((a, b) => a + b, 0) / valid2.length).toFixed(0)}%` : 'ไม่ต่อ';
+      summaryEl.textContent = `ความชื้นดินเฉลี่ย: แปลง 1: ${p0} • แปลง 2: ${p1} • แปลง 3: ${p2} (${rangeText})`;
     }
   } else {
-    if (metric === 'env') {
-      summaryEl.textContent = `อุณหภูมิเฉลี่ย 28.5°C • ความชื้นสัมพัทธ์เฉลี่ย 72% (${rLabel})`;
-    } else if (metric === 'soil') {
-      summaryEl.textContent = `ความชื้นดินเฉลี่ย 3 แปลงสมบูรณ์ 55% - 68% (${rLabel})`;
-    } else {
-      summaryEl.textContent = `การใช้น้ำรวม: 15.2 ลิตร (${rLabel})`;
-    }
+    // Water metric
+    const maxWater = records.reduce((max, r) => Math.max(max, r.waterTotal ?? 0), 0);
+    const avgFlow = (records.reduce((sum, r) => sum + (r.flowRate ?? 0), 0) / records.length).toFixed(2);
+    summaryEl.textContent = `การใช้น้ำสะสม: ${maxWater.toFixed(1)} ลิตร • อัตราไหลเฉลี่ย ${avgFlow} L/m (${rangeText})`;
   }
 }
 
-// Reset Historical Chart Data with SweetAlert2 Confirmation
-function confirmResetChartData() {
+// Clear Chart History Function with SweetAlert2 2-Step Confirmation
+function confirmClearHistory() {
   Swal.fire({
-    title: 'ยืนยันการล้างประวัติข้อมูลกราฟ? 🗑️',
-    html: `
-      <div class="text-left text-xs text-slate-600 space-y-2">
-        <p>คุณต้องการลบข้อมูลประวัติการวัดและสถิติการใช้น้ำย้อนหลังทั้งหมดที่บันทึกไว้ใน Firebase ใช่หรือไม่?</p>
-        <div class="p-3 bg-rose-50 text-rose-700 rounded-xl border border-rose-200">
-          ⚠️ <b>คำเตือน:</b> เมื่อลบแล้ว ข้อมูลเก่าที่ค้างอยู่จะถูกเคลียร์และไม่สามารถกู้คืนได้
-        </div>
-      </div>
-    `,
+    title: 'ล้างข้อมูลกราฟย้อนหลัง? 🗑️',
+    text: 'ต้องการลบข้อมูลสถิติและกราฟย้อนหลังทั้งหมดใช่หรือไม่? เมื่อลบแล้วข้อมูลเดิมจะไม่สามารถกู้คืนได้',
     icon: 'warning',
+    input: 'text',
+    inputPlaceholder: 'พิมพ์คำว่า "ยืนยัน" เพื่อลบ',
     showCancelButton: true,
-    confirmButtonText: 'ยืนยันล้างข้อมูล',
+    confirmButtonText: 'ลบประวัติกราฟ',
     cancelButtonText: 'ยกเลิก',
-    confirmButtonColor: '#e11d48',
-    cancelButtonColor: '#94a3b8',
-    reverseButtons: true
+    confirmButtonColor: '#E11D48',
+    cancelButtonColor: '#64748B',
+    inputValidator: (value) => {
+      if (value !== 'ยืนยัน') {
+        return 'กรุณาพิมพ์คำว่า "ยืนยัน" ให้ถูกต้องเพื่อความปลอดภัย';
+      }
+    }
   }).then((result) => {
     if (result.isConfirmed) {
       historyRef.remove().then(() => {
         state.firebaseHistory = [];
         initHistoricalChart();
         Swal.fire({
+          toast: true,
+          position: 'top',
           icon: 'success',
-          title: 'ล้างข้อมูลประวัติกราฟเรียบร้อยแล้ว 🌿',
-          text: 'ข้อมูลกราฟถูกรีเซ็ตและพร้อมเริ่มเก็บสถิติรอบใหม่แล้วครับ',
-          confirmButtonColor: '#15803D',
-          timer: 2200
+          title: 'ล้างประวัติกราฟย้อนหลังเรียบร้อยแล้ว',
+          showConfirmButton: false,
+          timer: 2000
         });
       }).catch((err) => {
-        handleFirebaseError(err, 'resetChartHistory');
+        handleFirebaseError(err, 'clearHistory');
       });
     }
   });
 }
 
 function updateHistoricalChartLive(data) {
-  if (!historicalChartInstance || state.chartRange !== '24h') return;
+  if (!historicalChartInstance || state.chartRange !== '1d') return;
   // If in 'env' mode and live temperature is available, update the last data point
   if (state.chartMetric === 'env' && typeof data.temperature === 'number' && typeof data.humidity === 'number') {
     const ds = historicalChartInstance.data.datasets;
@@ -2179,17 +2380,12 @@ function renderAlarmPage(data) {
     navBadge.classList.add('hidden');
   }
 
-  // Hardware Status (reads data.hardware or data.hw with smart fallbacks)
+  // Hardware Status (Support both data.hardware from ESP32 and legacy data.hw)
   const hw = data.hardware || data.hw || {};
-  const sht30Ok = (hw.sht30 === true) || (typeof data.temperature === 'number' && !isNaN(data.temperature) && data.temperature > 0);
-  const rtcOk = (hw.rtc === true) || (!!data.time && data.time !== '--:--:--');
-  const lcdOk = (hw.lcd === true) || (hw.lcd !== false && state.connected);
-  const sdOk = (hw.sd === true);
-
-  setHwBadge('hwLcdStatus', lcdOk);
-  setHwBadge('hwRtcStatus', rtcOk);
-  setHwBadge('hwSht30Status', sht30Ok);
-  setHwBadge('hwSdStatus', sdOk);
+  setHwBadge('hwLcdStatus', hw.lcd);
+  setHwBadge('hwRtcStatus', hw.rtc);
+  setHwBadge('hwSht30Status', hw.sht30);
+  setHwBadge('hwSdStatus', hw.sd);
   setHwBadge('hwWifiStatus', state.connected);
 
   // Diagnostics
@@ -2233,11 +2429,13 @@ document.getElementById('btnResetAlarm')?.addEventListener('click', () => {
   }).then((res) => {
     if (res.isConfirmed) {
       commandRef.set({
+        manualZone: -1,
+        manualAction: 'none',
+        manualDuration: 10,
         resetAlarm: true,
-        timestamp: Date.now(),
+        timestamp: Math.floor(Date.now() / 1000),
         source: 'web_app'
       }).then(() => {
-        setTimeout(() => commandRef.set(null).catch(() => {}), 2500);
         Swal.fire({
           toast: true,
           position: 'top',
@@ -2407,6 +2605,36 @@ document.addEventListener('DOMContentLoaded', () => {
     { mode: 2, enabled: true, running: false, waterUsed: 0 },
     { mode: 0, enabled: false, running: false, waterUsed: 0 }
   ]);
+
+  // Live Clock & Date Ticker (Smoothly ticks every second synchronized with ESP32 RTC)
+  function updateLiveDateTime() {
+    const clockEl = document.getElementById('clockDisplay');
+    const dateEl = document.getElementById('dateDisplay');
+    let currentDt;
+    if (state.connected && typeof state.rtcOffset === 'number') {
+      currentDt = new Date(Date.now() + state.rtcOffset);
+    } else {
+      currentDt = new Date();
+    }
+
+    const h = String(currentDt.getHours()).padStart(2, '0');
+    const m = String(currentDt.getMinutes()).padStart(2, '0');
+    const s = String(currentDt.getSeconds()).padStart(2, '0');
+    if (clockEl) clockEl.textContent = `${h}:${m}:${s}`;
+
+    if (dateEl) {
+      if (state.connected && state.rtcDate) {
+        dateEl.textContent = state.rtcDate;
+      } else {
+        const y = currentDt.getFullYear();
+        const mo = String(currentDt.getMonth() + 1).padStart(2, '0');
+        const d = String(currentDt.getDate()).padStart(2, '0');
+        dateEl.textContent = `${y}-${mo}-${d}`;
+      }
+    }
+  }
+  setInterval(updateLiveDateTime, 1000);
+  updateLiveDateTime();
 
   // Initialize Historical Chart
   initHistoricalChart();
