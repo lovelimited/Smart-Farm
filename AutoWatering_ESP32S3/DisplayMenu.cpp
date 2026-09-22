@@ -191,67 +191,86 @@ void getDayString(uint8_t days, char* buf, int bufLen) {
 //  SECTION 19: LCD & MENU RENDERING
 // ================================================================
 
-// --- Dashboard หน้าหลัก ---
+// --- Dashboard หน้าหลัก (จัดระเบียบให้สอดคล้องกับหน้า Web App) ---
 void renderDashboard() {
   char line[21];
 
-  // บรรทัด 0: เวลา & วันที่
+  // บรรทัด 0: เวลาแบบ 24 ชม. & วันที่ (เติมช่องว่างให้ครบ 20 ช่องเพื่อล้างตัวอักษรเก่าที่ค้าง)
   lcd.setCursor(0, 0);
   snprintf(line, 21, "%02d:%02d:%02d  %02d/%02d/%02d",
            rtcHour, rtcMinute, rtcSecond, rtcDay, rtcMonth, rtcYear % 100);
-  lcd.print(line);
-
-  // บรรทัด 1: อุณหภูมิ & ความชื้นอากาศ
-  lcd.setCursor(0, 1);
-  if (sht30OK) {
-    char tb[8], hb[8];
-    dtostrf(temperature, 4, 1, tb);
-    dtostrf(humidity, 3, 0, hb);
-    snprintf(line, 21, "T:%sC  RH:%s%%", tb, hb);
-  } else {
-    snprintf(line, 21, "T:--.-C  RH:--%% ");
-  }
   printPadded(line, LCD_COLS);
 
-  // บรรทัด 2: สถานะ Zone ทั้ง 4
-  lcd.setCursor(0, 2);
-  snprintf(line, 21, "%c%c%c%c",
-           zoneState[0].running ? '1' : '-',
-           zoneState[1].running ? '2' : '-',
-           zoneState[2].running ? '3' : '-',
-           zoneState[3].running ? '4' : '-');
-  // แสดงเป็น: Z:[1---] หรือ Z:[1234]
-  char zBuf[21];
-  snprintf(zBuf, 21, "Z:[%c%c%c%c]",
-           zoneState[0].running ? '1' : '-',
-           zoneState[1].running ? '2' : '-',
-           zoneState[2].running ? '3' : '-',
-           zoneState[3].running ? '4' : '-');
+  // บรรทัด 1: อุณหภูมิ & ความชื้นอากาศ (SHT30) และอัตราการไหล (Flow Rate)
+  lcd.setCursor(0, 1);
+  char tb[8], hb[8], fb[8];
+  if (sht30OK) {
+    dtostrf(temperature, 4, 1, tb);
+    dtostrf(humidity, 2, 0, hb);
+  } else {
+    strcpy(tb, "--.-");
+    strcpy(hb, "--");
+  }
+  dtostrf(flowRate, 4, 1, fb);
+  snprintf(line, 21, "T:%sC H:%s%% F:%s", tb, hb, fb);
+  printPadded(line, LCD_COLS);
 
-  // บรรทัด 2-3: แสดง Zone status + Alarm (ไม่ทับ Temp/Humid)
-  if (alarmActive) {
-    // บรรทัด 2: Zone status
-    lcd.setCursor(0, 2);
-    snprintf(line, 21, "%s Press=MENU", zBuf);
+  // บรรทัด 2: ค่าความชื้นดินแยก 3 โซน (S1, S2, S3) ตรงตาม Web App
+  lcd.setCursor(0, 2);
+  char s1Str[6], s2Str[6], s3Str[6];
+  if (soilError[0] || soilPercent[0] < 0) strcpy(s1Str, "--%");
+  else snprintf(s1Str, sizeof(s1Str), "%2.0f%%", soilPercent[0]);
+
+  if (soilError[1] || soilPercent[1] < 0) strcpy(s2Str, "--%");
+  else snprintf(s2Str, sizeof(s2Str), "%2.0f%%", soilPercent[1]);
+
+  if (soilError[2] || soilPercent[2] < 0) strcpy(s3Str, "--%");
+  else snprintf(s3Str, sizeof(s3Str), "%2.0f%%", soilPercent[2]);
+
+  snprintf(line, 21, "S1:%s S2:%s S3:%s", s1Str, s2Str, s3Str);
+  printPadded(line, LCD_COLS);
+
+  // บรรทัด 3: สถานะการรดน้ำ, แจ้งเตือน หรือสถานะโหมดทั้ง 4 โซน
+  lcd.setCursor(0, 3);
+  int activeZone = -1;
+  for (int z = 0; z < NUM_ZONES; z++) {
+    if (zoneState[z].running) {
+      activeZone = z;
+      break;
+    }
+  }
+
+  if (activeZone >= 0) {
+    // มีโซนกำลังรดน้ำ: แสดงเวลานับถอยหลัง
+    unsigned long elapsed = millis() - zoneState[activeZone].startTime;
+    unsigned long remSec = 0;
+    if (elapsed < zoneState[activeZone].durationMs) {
+      remSec = (zoneState[activeZone].durationMs - elapsed) / 1000UL;
+    }
+    if (activeZone == 3) {
+      snprintf(line, 21, ">> Z4 DRIP %02lu:%02lu <<", remSec / 60, remSec % 60);
+    } else {
+      snprintf(line, 21, ">> Z%d RUN  %02lu:%02lu <<", activeZone + 1, remSec / 60, remSec % 60);
+    }
     printPadded(line, LCD_COLS);
-    // บรรทัด 3: Alarm message (กระพริบ !)
-    lcd.setCursor(0, 3);
+  } else if (alarmActive) {
+    // มี Alarm เตือนแบบกระพริบ
     if ((millis() / 1000) % 2 == 0) {
       snprintf(line, 21, "! %-16s !", lastAlarmMsg);
     } else {
       snprintf(line, 21, "  %-16s  ", lastAlarmMsg);
     }
-    lcd.print(line);
-  } else {
-    lcd.setCursor(0, 2);
-    snprintf(line, 21, "Z1:%-3s Z2:%-3s Z3:%-3s",
-             zoneState[0].running ? "ON" : "OFF",
-             zoneState[1].running ? "ON" : "OFF",
-             zoneState[2].running ? "ON" : "OFF");
     printPadded(line, LCD_COLS);
-    lcd.setCursor(0, 3);
-    snprintf(line, 21, "Z4:%-3s    Press=MENU",
-             zoneState[3].running ? "ON" : "OFF");
+  } else {
+    // สถานะปกติ: แสดงโหมดโซน 1-3 และระบุโซน 4 เป็น DRIP (น้ำหยด)
+    char mChars[4];
+    for (int z = 0; z < 3; z++) {
+      if (zones[z].mode == MODE_OFF) mChars[z] = 'O';
+      else if (zones[z].mode == MODE_TIMER) mChars[z] = 'T';
+      else mChars[z] = 'S';
+    }
+    const char* z4Status = (zones[3].mode == MODE_OFF) ? "OFF " : "DRIP";
+    snprintf(line, 21, "Z:1%c 2%c 3%c  Z4:%s", mChars[0], mChars[1], mChars[2], z4Status);
     printPadded(line, LCD_COLS);
   }
 }
@@ -1837,6 +1856,10 @@ void updateLCD() {
   lastLcdUpdate = now;
 
   if (currentMenu == ST_DASHBOARD) {
+    if (lcdDirty) {
+      if (lcdOK) lcd.clear(); // เคลียร์หน้าจอทั้งหมดเมื่อกลับสู่หน้าแรก
+      lcdDirty = false;
+    }
     renderDashboard();
   } else if (currentMenu == ST_SENSOR || currentMenu == ST_FLOW_VIEW ||
              currentMenu == ST_FLOW_STATUS || currentMenu == ST_CALIB_SOIL ||

@@ -63,35 +63,48 @@ void initHardware() {
   Serial.println(F("=== Init Complete ==="));
 }
 
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
+// Forward declaration
+void firebaseTask(void *pvParameters);
 
 // ================================================================
 //  SETUP
 // ================================================================
 
 void setup() {
-  // ปิด Brownout Detector ป้องกัน ESP32 รีสตาร์ทจากไฟตกชั่วขณะตอนเปิด WiFi / Relay
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-
   // ตั้ง Buzzer pin
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
   // เริ่มต้นทุกระบบ
   initHardware();
+  readSensors(); // อ่านค่าเซ็นเซอร์รอบแรกทันที เพื่อไม่ให้อุณหภูมิเป็น 0 ตอนบูต
 
   // เสียง Boot
   beep(200);
 
   // แสดงหน้า Dashboard หลังจาก init เสร็จ
   delay(1500);  // แสดง splash screen 1.5 วินาที (ใช้ delay ตรงนี้เท่านั้น)
+  if (lcdOK) lcd.clear(); // เคลียร์ตัวหนังสือจากหน้าบูตทั้งหมด ป้องกันตัวอักษรค้าง
   lcdDirty = true;
   currentMenu = ST_DASHBOARD;
+
+  // เริ่มต้น Firebase Background Task บน Core 0 ด้วย Stack ขนาด 16KB เพื่อป้องกัน Stack Overflow จาก TLS/SSL
+  xTaskCreatePinnedToCore(firebaseTask, "firebaseTask", 16384, NULL, 1, NULL, 0);
 
   Serial.println(F("[SYS] System ready"));
   Serial.print(F("[SYS] Free heap: "));
   Serial.println(ESP.getFreeHeap());
+}
+
+// ================================================================
+//  FIREBASE BACKGROUND TASK (CORE 0, 16KB STACK)
+// ================================================================
+
+void firebaseTask(void *pvParameters) {
+  for (;;) {
+    syncFirebase();
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
 }
 
 // ================================================================
@@ -151,7 +164,7 @@ void printSerialStatus() {
 }
 
 // ================================================================
-//  MAIN LOOP — ไม่ใช้ delay()
+//  MAIN LOOP — ไม่ใช้ delay() (รันบน Core 1, UI & Sensor ตอบสนองรวดเร็ว)
 // ================================================================
 
 void loop() {
@@ -170,6 +183,9 @@ void loop() {
   // 5. ตรวจ Schedule
   checkSchedule();
 
+  // 5.1 ตรวจสอบความชื้นดินโหมด SMART (รดน้ำอัตโนมัติทันทีเมื่อดินแห้งกว่าเกณฑ์)
+  checkSmartMoisture();
+
   // 6. ควบคุม Zone (timeout, moisture, flow protection)
   controlZones();
 
@@ -187,7 +203,4 @@ void loop() {
 
   // 11. แสดงสถานะออก Serial Monitor ทุก 5 วินาที
   printSerialStatus();
-
-  // 12. Firebase Sync (ส่งข้อมูล + รับคำสั่ง)
-  syncFirebase();
 }

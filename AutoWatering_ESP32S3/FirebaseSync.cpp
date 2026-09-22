@@ -1,10 +1,11 @@
 #include "FirebaseSync.h"
 #include "Globals.h"
+#include "Sensors.h"
 #include "WateringControl.h"
 #include "BuzzerAlarm.h"
 #include "Storage.h"
-#include "Sensors.h"
 
+#include <time.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
@@ -52,8 +53,6 @@ int lastConfigVersion = -1;
 // --- Connection status ---
 bool firebaseReady = false;
 bool wifiConnected = false;
-bool needClearCommand = false;
-unsigned long long lastProcessedCmdTime = 0;
 
 // ================================================================
 //  CAPTIVE PORTAL HTML INTERFACE (PROGMEM)
@@ -306,6 +305,41 @@ void startWiFiAP() {
 }
 
 // ================================================================
+//  NTP TIME SYNCHRONIZATION (THAILAND STANDARD TIME UTC+7)
+// ================================================================
+
+bool syncRTCWithNTP() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("[NTP] WiFi not connected, skipping NTP sync"));
+    return false;
+  }
+
+  Serial.println(F("[NTP] Requesting Thailand Standard Time (UTC+7)..."));
+  // Thailand timezone: GMT offset = 7 * 3600 = 25200, daylight offset = 0
+  configTime(25200, 0, "th.pool.ntp.org", "pool.ntp.org", "time.google.com");
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 4000)) {
+    Serial.println(F("[NTP] Timeout waiting for NTP response"));
+    return false;
+  }
+
+  int yr = timeinfo.tm_year + 1900;
+  if (yr >= 2024) {
+    if (rtcOK) {
+      rtc.adjust(DateTime(yr, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+    }
+    updateRTC();
+    lcdDirty = true;
+    Serial.printf("[NTP] SUCCESS! Thailand Time Synced: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  rtcYear, rtcMonth, rtcDay, rtcHour, rtcMinute, rtcSecond);
+    return true;
+  }
+  return false;
+}
+
+// ================================================================
 //  WiFi INITIALIZATION
 // ================================================================
 
@@ -329,7 +363,6 @@ void initWiFi() {
   if (activeSSID.length() > 0) {
     Serial.print(F("[WIFI] Connecting to: ")); Serial.println(activeSSID);
     WiFi.mode(WIFI_STA);
-    WiFi.setTxPower(WIFI_POWER_15dBm);  // ลดกระแสกระชากขณะรับส่ง WiFi ป้องกัน Brownout
     WiFi.begin(activeSSID.c_str(), activePass.c_str());
 
     unsigned long startAttempt = millis();
@@ -344,6 +377,7 @@ void initWiFi() {
       apModeActive = false;
       Serial.print(F("[WIFI] Connected! IP: "));
       Serial.println(WiFi.localIP());
+      syncRTCWithNTP();
       return;
     }
     Serial.println(F("[WIFI] Connect failed. Switching to AP Setup Mode..."));
@@ -387,6 +421,7 @@ void reconnectWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
       wifiConnected = true;
       Serial.println(F("[WIFI] Reconnected!"));
+      syncRTCWithNTP();
     } else {
       wifiConnected = false;
     }
@@ -448,46 +483,35 @@ void syncFirebase() {
 
   unsigned long now = millis();
 
-  // Safety: Skip Firebase operations if heap is critically low
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < 20000) {
-    Serial.printf("[FIREBASE] Low heap: %u bytes, skipping sync cycle\n", freeHeap);
-    return;
-  }
-
-  // Clear processed command asynchronously outside callback (prevents stack overflow / recursion)
-  if (needClearCommand) {
-    needClearCommand = false;
-    String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"timestamp\":0}";
-    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
-    return; // Stagger
-  }
-
-  // Upload sensor status ทุก 3 วินาที
+  // Upload sensor status ทุก 2 วินาที
   if (now - lastUploadTime >= FIREBASE_SYNC_INTERVAL) {
     lastUploadTime = now;
     uploadStatus();
-    return; // Stagger: only one operation per loop cycle
   }
 
-  // Check commands ทุก 2 วินาที
+  // Check commands ทุก 1 วินาที
   if (now - lastCmdCheckTime >= FIREBASE_CMD_INTERVAL) {
     lastCmdCheckTime = now;
     checkCommands();
-    return; // Stagger
   }
 
   // Sync config ทุก 5 วินาที
   if (now - lastConfigSync >= 5000) {
     lastConfigSync = now;
     checkConfigSync();
-    return; // Stagger
   }
 
   // Upload telemetry snapshot ลงประวัติกราฟ ทุก 10 นาที
   if (now - lastHistoryUpload >= FIREBASE_HISTORY_INTERVAL) {
     lastHistoryUpload = now;
     uploadHistoryLog();
+  }
+
+  // Sync เวลา NTP ประเทศไทย ทุก 1 ชั่วโมง ป้องกันเวลา RTC คลาดเคลื่อน
+  static unsigned long lastNtpSyncTime = 0;
+  if (now - lastNtpSyncTime >= 3600000UL) {
+    lastNtpSyncTime = now;
+    syncRTCWithNTP();
   }
 }
 
@@ -577,7 +601,6 @@ void uploadStatus() {
   json += ",\"wifi\":true";
   json += "}";
 
-
   // --- Alarm ---
   json += ",\"alarm\":{";
   json += "\"active\":" + String(alarmActive ? "true" : "false");
@@ -591,6 +614,7 @@ void uploadStatus() {
   json += ",\"uptime\":" + String(millis() / 1000);
   json += ",\"fw\":\"" + String(FW_VERSION) + "\"";
   json += ",\"lastSync\":" + String(millis());
+  json += ",\"ts\":{\".sv\":\"timestamp\"}";
 
   json += "}";
 
@@ -603,6 +627,10 @@ void uploadStatus() {
 //  รับคำสั่ง Manual Control / Reset Alarm จาก Web App
 // ================================================================
 
+// --- Command tracking & clean clear flags ---
+static uint64_t lastExecutedCmdTimestamp = 0;
+static bool pendingCommandClear = false;
+
 // Callback for async get
 void commandCallback(AsyncResult &result) {
   if (!result.isResult()) return;
@@ -611,8 +639,11 @@ void commandCallback(AsyncResult &result) {
   String payload = result.c_str();
   if (payload == "null" || payload.length() < 3) return;
 
-  // Parse timestamp to prevent processing the same command multiple times
-  unsigned long long cmdTimestamp = 0;
+  // Parse manual zone command
+  // Expected format: {"manualZone":0,"manualAction":"start","manualDuration":10,"resetAlarm":false,"timestamp":123456}
+  
+  // Parse timestamp to prevent infinite re-execution (supports both seconds and milliseconds)
+  uint64_t cmdTimestamp = 0;
   int tsPos = payload.indexOf("\"timestamp\":");
   if (tsPos >= 0) {
     int valStart = tsPos + 12;
@@ -622,19 +653,13 @@ void commandCallback(AsyncResult &result) {
       if (c == ',' || c == '}') break;
       if (c >= '0' && c <= '9') valStr += c;
     }
-    if (valStr.length() > 0) {
-      cmdTimestamp = strtoull(valStr.c_str(), NULL, 10);
+    cmdTimestamp = strtoull(valStr.c_str(), NULL, 10);
+    // If timestamp was sent in milliseconds (> 10 billion), convert to seconds
+    if (cmdTimestamp > 10000000000ULL) {
+      cmdTimestamp = cmdTimestamp / 1000ULL;
     }
   }
 
-  // If this command has already been executed, ignore it to prevent loop
-  if (cmdTimestamp > 0 && cmdTimestamp == lastProcessedCmdTime) {
-    return;
-  }
-
-  // Parse manual zone command
-  // Expected format: {"manualZone":0,"manualAction":"start","manualDuration":10,"resetAlarm":false,"timestamp":123456}
-  
   // Parse manualZone
   int zoneIdx = -1;
   int mzPos = payload.indexOf("\"manualZone\":");
@@ -676,52 +701,40 @@ void commandCallback(AsyncResult &result) {
     if (duration > 120) duration = 120;
   }
 
-  // Execute manual command
+  // Execute manual command if not already executed
   if (zoneIdx >= 0 && zoneIdx < NUM_ZONES && action != "none") {
+    if (cmdTimestamp > 0 && cmdTimestamp == lastExecutedCmdTimestamp) {
+      // Already processed, queue clear
+      pendingCommandClear = true;
+      return;
+    }
+    lastExecutedCmdTimestamp = cmdTimestamp;
+
     if (action == "start") {
       Serial.printf("[FIREBASE] Manual START Z%d for %d min\n", zoneIdx + 1, duration);
       unsigned long durMs = (unsigned long)duration * 60UL * 1000UL;
       startZone(zoneIdx, durMs);
       zoneState[zoneIdx].manual = true;
-      lastUploadTime = 0; // Trigger immediate status upload!
     } else if (action == "stop") {
-      Serial.printf("[FIREBASE] Manual STOP Z%d\n", zoneIdx + 1);
-      stopZone(zoneIdx);
-      lastUploadTime = 0; // Trigger immediate status upload!
-    }
-
-    // Parse optional setMode in command (e.g. when user clicks OFF or changes mode)
-    int smPos = payload.indexOf("\"setMode\":");
-    if (smPos >= 0) {
-      int valStart = smPos + 10;
-      String smStr = "";
-      for (int i = valStart; i < (int)payload.length(); i++) {
-        char c = payload.charAt(i);
-        if (c == ',' || c == '}') break;
-        if (c >= '0' && c <= '9') smStr += c;
-      }
-      if (smStr.length() > 0) {
-        int newMode = smStr.toInt();
-        zones[zoneIdx].mode = newMode;
-        Serial.printf("[FIREBASE] Z%d mode changed to %d via command\n", zoneIdx + 1, newMode);
-        if (newMode == MODE_OFF) {
-          stopZone(zoneIdx);
-        }
-        lastUploadTime = 0;
-        lcdDirty = true;
+      if (zoneState[zoneIdx].running) {
+        Serial.printf("[FIREBASE] Manual STOP Z%d\n", zoneIdx + 1);
+        stopZone(zoneIdx);
       }
     }
 
-    if (cmdTimestamp > 0) {
-      lastProcessedCmdTime = cmdTimestamp;
-    }
-    // Mark to clear outside callback in syncFirebase() to prevent re-entrancy
-    needClearCommand = true;
+    // Mark command to be cleared safely outside callback
+    pendingCommandClear = true;
   }
 
   // Parse resetAlarm
   int raPos = payload.indexOf("\"resetAlarm\":true");
   if (raPos >= 0) {
+    if (cmdTimestamp > 0 && cmdTimestamp == lastExecutedCmdTimestamp) {
+      pendingCommandClear = true;
+      return;
+    }
+    lastExecutedCmdTimestamp = cmdTimestamp;
+
     Serial.println(F("[FIREBASE] Reset Alarm command received"));
     alarmActive = false;
     lastAlarmType = ALARM_NONE;
@@ -730,55 +743,90 @@ void commandCallback(AsyncResult &result) {
     for (int z = 0; z < NUM_ZONES; z++) {
       zoneState[z].alarm = false;
     }
+    for (int i = 0; i < NUM_SOIL_SENSORS; i++) {
+      soilError[i] = false;
+    }
     lcdDirty = true;
     beep(100);
 
-    if (cmdTimestamp > 0) {
-      lastProcessedCmdTime = cmdTimestamp;
-    }
-    needClearCommand = true;
+    pendingCommandClear = true;
   }
 
-  // Parse syncTime command from WebApp
-  int stPos = payload.indexOf("\"syncTime\":true");
+  // Parse setTime: รับคำสั่งตั้งเวลาตรงจากเว็บ/มือถือ
+  int stPos = payload.indexOf("\"setTime\":true");
   if (stPos >= 0) {
-    auto parseIntVal = [&](const String &key) -> int {
+    if (cmdTimestamp > 0 && cmdTimestamp == lastExecutedCmdTimestamp) {
+      pendingCommandClear = true;
+      return;
+    }
+    lastExecutedCmdTimestamp = cmdTimestamp;
+
+    auto parseKeyInt = [&](const String &key) -> int {
       int p = payload.indexOf(key);
       if (p < 0) return -1;
-      int s = p + key.length();
-      String v = "";
-      for (int i = s; i < (int)payload.length(); i++) {
+      int vs = p + key.length();
+      String val = "";
+      for (int i = vs; i < (int)payload.length(); i++) {
         char c = payload.charAt(i);
-        if (c == ',' || c == '}') break;
-        if (c >= '0' && c <= '9') v += c;
+        if (c == ',' || c == '}' || c == ' ') {
+          if (val.length() > 0) break;
+          continue;
+        }
+        val += c;
       }
-      return v.length() > 0 ? v.toInt() : -1;
+      return val.toInt();
     };
 
-    int yr = parseIntVal("\"year\":");
-    int mo = parseIntVal("\"month\":");
-    int dy = parseIntVal("\"day\":");
-    int hr = parseIntVal("\"hour\":");
-    int mn = parseIntVal("\"minute\":");
-    int sc = parseIntVal("\"second\":");
+    int yr = rtcYear, mo = rtcMonth, dy = rtcDay, hr = rtcHour, mn = rtcMinute, sc = rtcSecond;
 
-    if (yr >= 2024 && mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31 && hr >= 0 && hr <= 23 && mn >= 0 && mn <= 59) {
-      rtc.adjust(DateTime(yr, mo, dy, hr, mn, sc >= 0 ? sc : 0));
-      Serial.printf("[RTC] Synced with WebApp: %04d-%02d-%02d %02d:%02d:%02d\n", yr, mo, dy, hr, mn, sc >= 0 ? sc : 0);
+    int pY = parseKeyInt("\"year\":");
+    if (pY < 2000) pY = parseKeyInt("\"y\":");
+    if (pY >= 2024) yr = pY;
+
+    int pM = parseKeyInt("\"month\":");
+    if (pM <= 0) pM = parseKeyInt("\"mo\":");
+    if (pM >= 1 && pM <= 12) mo = pM;
+
+    int pD = parseKeyInt("\"day\":");
+    if (pD <= 0) pD = parseKeyInt("\"d\":");
+    if (pD >= 1 && pD <= 31) dy = pD;
+
+    int pH = parseKeyInt("\"hour\":");
+    if (pH < 0) pH = parseKeyInt("\"h\":");
+    if (pH >= 0 && pH <= 23) hr = pH;
+
+    int pMn = parseKeyInt("\"minute\":");
+    if (pMn < 0) pMn = parseKeyInt("\"m\":");
+    if (pMn >= 0 && pMn <= 59) mn = pMn;
+
+    int pS = parseKeyInt("\"second\":");
+    if (pS < 0) pS = parseKeyInt("\"s\":");
+    if (pS >= 0 && pS <= 59) sc = pS;
+
+    if (rtcOK) {
+      rtc.adjust(DateTime(yr, mo, dy, hr, mn, sc));
       updateRTC();
-      lcdDirty = true;
-      beep(80);
+      Serial.printf("[RTC] Synced via command: %04d-%02d-%02d %02d:%02d:%02d\n",
+                    yr, mo, dy, hr, mn, sc);
     }
-
-    if (cmdTimestamp > 0) {
-      lastProcessedCmdTime = cmdTimestamp;
-    }
-    needClearCommand = true;
+    lcdDirty = true;
+    beep(60);
+    uploadStatus();
+    pendingCommandClear = true;
   }
 }
 
 void checkCommands() {
   if (!firebaseReady) return;
+
+  // Clear pending command safely outside callback
+  if (pendingCommandClear) {
+    pendingCommandClear = false;
+    String clearJson = "{\"manualZone\":-1,\"manualAction\":\"none\",\"manualDuration\":10,\"resetAlarm\":false,\"setTime\":false,\"timestamp\":0}";
+    Database.set<object_t>(asyncClient, "/devices/esp32/commands", object_t(clearJson), syncResult);
+    return;
+  }
+
   Database.get(asyncClient, "/devices/esp32/commands", commandCallback);
 }
 
@@ -806,8 +854,9 @@ void configCallback(AsyncResult &result) {
     }
     int newVersion = valStr.toInt();
     
-    if (newVersion > lastConfigVersion || lastConfigVersion == -1) {
-      Serial.printf("[FIREBASE] Config updated (v%d -> v%d), applying...\n", lastConfigVersion, newVersion);
+    // Sync on first boot (when lastConfigVersion == -1) or whenever configVersion changes
+    if (newVersion != lastConfigVersion) {
+      Serial.printf("[FIREBASE] Config sync (v%d -> v%d), applying...\n", lastConfigVersion, newVersion);
       
       // Parse zone configs from the JSON
       // We look for zone array data
@@ -831,13 +880,12 @@ void configCallback(AsyncResult &result) {
             if (c == ',' || c == '}') break;
             if (c != ' ') valStr2 += c;
           }
-          int newMode = valStr2.toInt();
-          zones[z].mode = newMode;
-          // If mode is OFF, immediately stop relay if running
-          if (newMode == MODE_OFF && zoneState[z].running) {
-            Serial.printf("[FIREBASE] Z%d set to OFF, stopping relay immediately\n", z + 1);
-            stopZone(z);
-            lastUploadTime = 0;
+          zones[z].mode = valStr2.toInt();
+          // ซิงค์ให้ enabled และ mode สอดคล้องกันเสมอ
+          if (zones[z].mode == MODE_OFF) {
+            zones[z].enabled = false;
+          } else {
+            zones[z].enabled = true;
           }
         }
         
@@ -927,6 +975,31 @@ void configCallback(AsyncResult &result) {
               if (c != ' ') valStr2 += c;
             }
             zones[z].schedules[s].days = valStr2.toInt();
+          }
+        }
+      }
+
+      // Parse flowProtection
+      String fpKey = "\"flowProtection\":";
+      int pos = payload.indexOf(fpKey);
+      if (pos >= 0) {
+        int vs = pos + fpKey.length();
+        String valStr = "";
+        for (int i = vs; i < (int)payload.length(); i++) {
+          char c = payload.charAt(i);
+          if (c == ',' || c == '}') break;
+          if (c != ' ') valStr += c;
+        }
+        flowCfg.enabled = (valStr == "true" || valStr == "1");
+        Serial.printf("[FIREBASE] Flow Protection: %s\n", flowCfg.enabled ? "ON" : "OFF");
+        if (!flowCfg.enabled) {
+          for (int z = 0; z < NUM_ZONES; z++) {
+            zoneState[z].alarm = false;
+          }
+          if (alarmActive && (lastAlarmType == ALARM_NO_FLOW || lastAlarmType == ALARM_HIGH_FLOW)) {
+            alarmActive = false;
+            lastAlarmType = ALARM_NONE;
+            lastAlarmMsg[0] = '\0';
           }
         }
       }

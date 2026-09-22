@@ -13,5 +13,6 @@ void startZone(int z, unsigned long durationMs);
 void stopZone(int z);
 void controlZones();
 void checkSchedule();
+void checkSmartMoisture();
 
 #endif // WATERING_CONTROL_H

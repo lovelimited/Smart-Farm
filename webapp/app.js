@@ -266,18 +266,18 @@ statusRef.on('value', (snapshot) => {
   state.lastData = data;
   setConnectionState(true);
 
-  // Stale check and RTC calibration from ESP32
+  // Stale check and RTC drift monitoring from ESP32
   if (data.date && data.time) {
     const timeStr = data.time.length === 5 ? data.time + ':00' : data.time;
     const espTime = Date.parse(`${data.date}T${timeStr}+07:00`) || Date.parse(`${data.date} ${data.time}`);
     if (!isNaN(espTime)) {
       const timeDiff = Math.abs(currentServerTime - espTime);
-      state.rtcOffset = espTime - currentServerTime;
       state.rtcDate = data.date;
 
-      // Auto-sync time if ESP32 clock drifted by more than 15 seconds (only when actively online)
-      if (timeDiff > 15000 && !state.hasAutoSyncedTime && state.connected && state.receivedCount >= 2) {
-        state.hasAutoSyncedTime = true;
+      // Auto-sync time if ESP32 clock drifted by more than 15 seconds (cooldown 60s)
+      const nowMs = Date.now();
+      if (timeDiff > 15000 && state.connected && state.receivedCount >= 2 && (nowMs - (state.lastAutoSyncAt || 0) > 60000)) {
+        state.lastAutoSyncAt = nowMs;
         console.log(`[Time Sync] ESP32 clock drifted by ${(timeDiff / 1000).toFixed(0)}s. Auto-syncing with Thailand time...`);
         syncTimeToEsp32(true);
       }
@@ -479,15 +479,7 @@ function renderDashboard(data) {
   // Auto-record telemetry snapshot for historical charts
   recordTelemetrySnapshot(data);
 
-  // Clock & Date display
-  const clockEl = document.getElementById('clockDisplay');
-  const dateEl = document.getElementById('dateDisplay');
-  if (data.date && dateEl) {
-    dateEl.textContent = data.date;
-  }
-  if (data.time && clockEl) {
-    clockEl.textContent = data.time;
-  }
+
 
   // FW Badge
   if (data.fw) {
@@ -1080,28 +1072,36 @@ function sendManualCommand(zone, action, duration) {
 
 // 4. Send Time Sync Command to ESP32 (Synchronizes RTC with exact Thailand Standard Time UTC+7)
 function syncTimeToEsp32(silent = false) {
-  const now = new Date();
+  const atomicUtc = Date.now() + (typeof serverTimeOffset === 'number' ? serverTimeOffset : 0);
+  const thDate = new Date(atomicUtc + (7 * 3600 * 1000));
+  const yr = thDate.getUTCFullYear();
+  const mo = thDate.getUTCMonth() + 1;
+  const dy = thDate.getUTCDate();
+  const hr = thDate.getUTCHours();
+  const mn = thDate.getUTCMinutes();
+  const sc = thDate.getUTCSeconds();
+
   const payload = {
     setTime: true,
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-    day: now.getDate(),
-    hour: now.getHours(),
-    minute: now.getMinutes(),
-    second: now.getSeconds(),
-    timestamp: Math.floor(Date.now() / 1000),
+    year: yr,
+    month: mo,
+    day: dy,
+    hour: hr,
+    minute: mn,
+    second: sc,
+    timestamp: Math.floor(atomicUtc / 1000),
     source: 'time_sync'
   };
 
   return commandRef.set(payload).then(() => {
-    state.rtcOffset = 0;
+    state.lastAutoSyncAt = Date.now();
     if (!silent && window.Swal) {
       Swal.fire({
         toast: true,
         position: 'top-end',
         icon: 'success',
         title: 'ซิงค์เวลามาตรฐานประเทศไทยสำเร็จ',
-        text: `เวลา ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')} (UTC+7) ถูกส่งไปยัง ESP32 แล้ว`,
+        text: `เวลา ${String(hr).padStart(2, '0')}:${String(mn).padStart(2, '0')}:${String(sc).padStart(2, '0')} (UTC+7) ถูกส่งไปยัง ESP32 แล้ว`,
         timer: 2500,
         showConfirmButton: false
       });
@@ -2537,10 +2537,20 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js', { scope: './' })
       .then((reg) => {
         console.log('[PWA] Service Worker registered with scope:', reg.scope);
+        reg.update();
       })
       .catch((err) => {
         console.warn('[PWA] Service Worker registration failed:', err);
       });
+  });
+
+  // Ensure PWA updates when brought back to foreground
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (reg) reg.update();
+      });
+    }
   });
 }
 
@@ -2654,34 +2664,40 @@ document.addEventListener('DOMContentLoaded', () => {
     { mode: 0, enabled: false, running: false, waterUsed: 0 }
   ]);
 
-  // Live Clock & Date Ticker (Smoothly ticks every second synchronized with ESP32 RTC)
+  // Live Clock & Date Ticker (Smoothly ticks synchronized with Thailand Standard Time UTC+7)
+  function getThailandDateTime() {
+    const atomicUtc = Date.now() + (typeof serverTimeOffset === 'number' ? serverTimeOffset : 0);
+    const thDate = new Date(atomicUtc + (7 * 3600 * 1000));
+    return {
+      year: thDate.getUTCFullYear(),
+      month: String(thDate.getUTCMonth() + 1).padStart(2, '0'),
+      day: String(thDate.getUTCDate()).padStart(2, '0'),
+      hour: String(thDate.getUTCHours()).padStart(2, '0'),
+      minute: String(thDate.getUTCMinutes()).padStart(2, '0'),
+      second: String(thDate.getUTCSeconds()).padStart(2, '0')
+    };
+  }
+
+  let lastClockStr = '';
+  let lastDateStr = '';
   function updateLiveDateTime() {
     const clockEl = document.getElementById('clockDisplay');
     const dateEl = document.getElementById('dateDisplay');
-    let currentDt;
-    if (state.connected && typeof state.rtcOffset === 'number') {
-      currentDt = new Date(Date.now() + state.rtcOffset);
-    } else {
-      currentDt = new Date();
+    const th = getThailandDateTime();
+    const timeStr = `${th.hour}:${th.minute}:${th.second}`;
+    const dateStr = `${th.year}-${th.month}-${th.day}`;
+
+    if (clockEl && timeStr !== lastClockStr) {
+      clockEl.textContent = timeStr;
+      lastClockStr = timeStr;
     }
 
-    const h = String(currentDt.getHours()).padStart(2, '0');
-    const m = String(currentDt.getMinutes()).padStart(2, '0');
-    const s = String(currentDt.getSeconds()).padStart(2, '0');
-    if (clockEl) clockEl.textContent = `${h}:${m}:${s}`;
-
-    if (dateEl) {
-      if (state.connected && state.rtcDate) {
-        dateEl.textContent = state.rtcDate;
-      } else {
-        const y = currentDt.getFullYear();
-        const mo = String(currentDt.getMonth() + 1).padStart(2, '0');
-        const d = String(currentDt.getDate()).padStart(2, '0');
-        dateEl.textContent = `${y}-${mo}-${d}`;
-      }
+    if (dateEl && dateStr !== lastDateStr) {
+      dateEl.textContent = dateStr;
+      lastDateStr = dateStr;
     }
   }
-  setInterval(updateLiveDateTime, 1000);
+  setInterval(updateLiveDateTime, 200);
   updateLiveDateTime();
 
   // Initialize Historical Chart

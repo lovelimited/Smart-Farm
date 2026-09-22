@@ -76,13 +76,13 @@ void checkAlarms() {
     if (temperature > alarmCfg.tempHigh) {
       triggerAlarm(ALARM_OVER_TEMP, -1, "OVER TEMP");
     }
-    if (temperature < alarmCfg.tempLow) {
+    if (temperature > 0.0f && temperature < alarmCfg.tempLow) {
       triggerAlarm(ALARM_LOW_TEMP, -1, "LOW TEMP");
     }
     if (humidity > alarmCfg.humHigh) {
       triggerAlarm(ALARM_HIGH_HUMID, -1, "HIGH HUMID");
     }
-    if (humidity < alarmCfg.humLow) {
+    if (humidity > 0.0f && humidity < alarmCfg.humLow) {
       triggerAlarm(ALARM_LOW_HUMID, -1, "LOW HUMID");
     }
   }
@@ -102,14 +102,41 @@ void checkAlarms() {
     triggerAlarm(ALARM_SD_ERROR, -1, "SD ERROR");
   }
 
-  // Soil Sensor Error
+  // Soil Sensor Error - เตือนเฉพาะโซนที่เปิดใช้งานและอยู่ในโหมด SMART เท่านั้น
   if (alarmCfg.soilEnabled) {
     for (int i = 0; i < NUM_SOIL_SENSORS; i++) {
-      if (soilError[i]) {
+      if (soilError[i] && zones[i].enabled && zones[i].mode == MODE_SMART) {
         char msg[16];
         snprintf(msg, sizeof(msg), "SOIL%d ERR", i + 1);
         triggerAlarm(ALARM_SOIL_ERROR, i, msg);
       }
+    }
+  }
+
+  // Auto-Clear Alarm เมื่อทุกอย่างกลับมาเป็นปกติ
+  if (alarmActive) {
+    bool hasFault = false;
+    if (alarmCfg.sht30Enabled && sht30OK) {
+      if (temperature > alarmCfg.tempHigh || (temperature > 0.0f && temperature < alarmCfg.tempLow)) hasFault = true;
+      if (humidity > alarmCfg.humHigh || (humidity > 0.0f && humidity < alarmCfg.humLow)) hasFault = true;
+    }
+    if (alarmCfg.sht30Enabled && !sht30OK) hasFault = true;
+    if (alarmCfg.rtcEnabled && !rtcOK) hasFault = true;
+    if (alarmCfg.sdEnabled && !sdOK) hasFault = true;
+    for (int i = 0; i < NUM_SOIL_SENSORS; i++) {
+      if (soilError[i] && zones[i].enabled && zones[i].mode == MODE_SMART) hasFault = true;
+    }
+    for (int z = 0; z < NUM_ZONES; z++) {
+      if (zoneState[z].alarm) hasFault = true;
+    }
+
+    if (!hasFault) {
+      Serial.println(F("[ALARM] All faults resolved -> Auto-cleared!"));
+      alarmActive = false;
+      lastAlarmType = ALARM_NONE;
+      lastAlarmMsg[0] = '\0';
+      lcdDirty = true;
+      uploadStatus(); // ซิงค์สถานะปกติขึ้น Firebase ทันที เพื่อให้หน้าเว็บหายแดงทันที
     }
   }
 }

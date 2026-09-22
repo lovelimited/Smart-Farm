@@ -3,9 +3,6 @@
 
 #include <Arduino.h>
 #include "Config.h"
-#include "Sensors.h"
-
-void updateRTC();
 
 // ================================================================
 //  FIREBASE SYNC MODULE INTERFACES
@@ -19,6 +16,7 @@ void initFirebase();        // เชื่อมต่อ Firebase RTDB
 
 // --- Sync Functions (เรียกใน loop) ---
 void syncFirebase();        // Wrapper: upload status + check commands
+bool syncRTCWithNTP();      // ซิงค์เวลา RTC DS3231 กับ NTP ประเทศไทย (th.pool.ntp.org UTC+7)
 
 // --- Internal ---
 void uploadStatus();        // ส่งข้อมูล Sensor/Zone ขึ้น Firebase

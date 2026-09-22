@@ -74,6 +74,9 @@ void loadSettings() {
 
     // Flow Config
     prefs.getBytes("flowCfg", &flowCfg, sizeof(FlowConfig));
+    if (flowCfg.flowDelay < 15) {
+      flowCfg.flowDelay = DEFAULT_FLOW_DELAY;
+    }
 
     // Alarm Config
     prefs.getBytes("alarmCfg", &alarmCfg, sizeof(AlarmConfig));
@@ -111,7 +114,7 @@ void loadSettings() {
     flowCfg.minFlow   = DEFAULT_MIN_FLOW;
     flowCfg.maxFlow   = DEFAULT_MAX_FLOW;
     flowCfg.flowDelay = DEFAULT_FLOW_DELAY;
-    flowCfg.enabled   = true;
+    flowCfg.enabled   = false; // ปิดเป็นค่าเริ่มต้น เพื่อให้ทดสอบรดน้ำได้โดยไม่ถูกตัดหากไม่ต่อน้ำจริง
 
     // ค่าเริ่มต้น Alarm Config
     alarmCfg.soilEnabled  = true;

@@ -51,21 +51,21 @@
 // ================================================================
 
 // --- WiFi Credentials (เปลี่ยนเป็นค่าจริงก่อน Flash) ---
-#define WIFI_SSID           "Krittapot"
-#define WIFI_PASS           "123456789a"
+#define WIFI_SSID           "Signal X"
+#define WIFI_PASS           "202540aa"
 #define WIFI_CONNECT_TIMEOUT 15000   // ms timeout การเชื่อมต่อ WiFi
 
 // --- Firebase Realtime Database ---
 #define FIREBASE_API_KEY    "AIzaSyBMKH9oG2DbhSZtIsN9d7iRfryHRkiUqRE"
 #define FIREBASE_DB_URL     "https://smart-farm-esp32-5e482-default-rtdb.asia-southeast1.firebasedatabase.app"
-#define FIREBASE_SYNC_INTERVAL  2500  // ms ส่งข้อมูลทุก 2.5 วินาที
-#define FIREBASE_CMD_INTERVAL   1000  // ms รับคำสั่งทุก 1 วินาที (ตอบสนองคำสั่งเปิด-ปิดทันใจ)
+#define FIREBASE_SYNC_INTERVAL  2000  // ms ส่งข้อมูลทุก 2 วินาที
+#define FIREBASE_CMD_INTERVAL   1000  // ms รับคำสั่งทุก 1 วินาที
 
 // ================================================================
 //  SECTION 3: RELAY LOGIC — เปลี่ยนได้ง่ายตรงนี้
 // ================================================================
-#define RELAY_ON   LOW    // Active LOW relay module (ดึง LOW = ทำงาน/เปิดน้ำ, ดึง HIGH = ตัด/ปิดน้ำ)
-#define RELAY_OFF  HIGH
+#define RELAY_ON   HIGH   // Active HIGH relay module
+#define RELAY_OFF  LOW
 
 // ================================================================
 //  SECTION 4: CONSTANTS
@@ -111,7 +111,7 @@
 #define DEFAULT_K_FACTOR     7.5f
 #define DEFAULT_MIN_FLOW     0.5f
 #define DEFAULT_MAX_FLOW     30.0f
-#define DEFAULT_FLOW_DELAY   5       // วินาที
+#define DEFAULT_FLOW_DELAY   30      // วินาที (หน่วงเวลา 30 วินาทีเพื่อให้น้ำไหลผ่านท่อ)
 #define DEFAULT_DRY_ADC      2860
 #define DEFAULT_WET_ADC      1240
 #define DEFAULT_MOIST_START  35
