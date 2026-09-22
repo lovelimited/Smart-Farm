@@ -54,6 +54,8 @@ let state = {
   configData: null,
   activeDurations: [10, 10, 10, 10], // default duration in minutes for each zone
   zoneModes: [1, 1, 2, 1], // 0: OFF, 1: TIMER, 2: SMART (Zone 4 is TIMER only)
+  lastUserModeChange: [0, 0, 0, 0], // Timestamp of user mode change to prevent stale ESP32 echo bounce
+  expandedZoneSettings: [false, false, false, false], // Accordion toggle for unified zone card
   zoneSchedules: {
     0: [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }],
     1: [{ enabled: true, hour: 7, minute: 30, duration: 15, days: 127 }],
@@ -153,6 +155,10 @@ function handleFirebaseError(err, actionContext) {
 //  TAB NAVIGATION
 // ================================================================
 function switchTab(tabId) {
+  // Redirect legacy schedule tab to unified zones page
+  if (tabId === 'pageSchedule') {
+    tabId = 'pageZones';
+  }
   state.currentTab = tabId;
 
   // Update Page Views
@@ -169,7 +175,7 @@ function switchTab(tabId) {
 
   // Update Bottom Nav Items
   document.querySelectorAll('.nav-item').forEach(btn => {
-    if (btn.dataset.target === tabId) {
+    if (btn.dataset.target === tabId || (tabId === 'pageZones' && btn.dataset.target === 'pageZones')) {
       btn.classList.add('active');
       btn.classList.add('text-forest-700');
       btn.classList.remove('text-slate-400');
@@ -180,9 +186,9 @@ function switchTab(tabId) {
     }
   });
 
-  // If switched to schedule, immediately render settings from memory without waiting
-  if (tabId === 'pageSchedule') {
-    renderScheduleSettings();
+  // If switched to unified zones page, immediately render zone cards
+  if (tabId === 'pageZones') {
+    renderZoneControls(state.lastData);
   }
 
   // If switched to dashboard, re-render chart to ensure correct canvas sizing
@@ -284,11 +290,20 @@ statusRef.on('value', (snapshot) => {
     }
   }
 
-  // Sync zone modes if available from ESP32
+  // Sync zone modes if available from ESP32 (anti-bounce: protect against stale telemetry echo)
   if (data.zones && Array.isArray(data.zones)) {
     data.zones.forEach((z, i) => {
       if (typeof z.mode === 'number') {
-        state.zoneModes[i] = z.mode;
+        const timeSinceUserChange = Date.now() - (state.lastUserModeChange?.[i] || 0);
+        if (timeSinceUserChange < 8000) {
+          // If ESP32 has now matched user's desired mode, clear the cooldown timer
+          if (z.mode === state.zoneModes[i]) {
+            state.lastUserModeChange[i] = 0;
+          }
+          // While within grace period, keep user's mode to prevent the button bouncing back
+        } else {
+          state.zoneModes[i] = z.mode;
+        }
       }
     });
   }
@@ -366,7 +381,10 @@ function parseFirebaseConfig(data) {
     const moistStart = data[`z${i}_moistStart`] ?? zoneObj.moistureStart ?? 35;
     const moistStop = data[`z${i}_moistStop`] ?? zoneObj.moistureStop ?? 55;
 
-    state.zoneModes[i] = mode;
+    const timeSinceUserChange = Date.now() - (state.lastUserModeChange?.[i] || 0);
+    if (timeSinceUserChange >= 8000 || mode === state.zoneModes[i]) {
+      state.zoneModes[i] = mode;
+    }
 
     let scheds = [];
     if (zoneObj.schedules && Array.isArray(zoneObj.schedules)) {
@@ -697,16 +715,19 @@ function renderDashboardZoneCards(zones) {
       <div class="mt-2.5 pt-2 border-t border-slate-100">
         ${modeSegmentedHtml}
 
-        <!-- Quick Action Trigger -->
-        <div class="mt-2 text-center">
+        <!-- Quick Action Trigger & Schedule Jump -->
+        <div class="mt-2 grid grid-cols-2 gap-1.5 text-center">
           ${isRunning 
-            ? `<button onclick="confirmStopZone(${z})" class="w-full py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
-                 <i class="ti ti-player-stop text-xs"></i> หยุดรดน้ำ
+            ? `<button onclick="confirmStopZone(${z})" class="py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
+                 <i class="ti ti-player-stop text-xs"></i> หยุด
                </button>`
-            : `<button onclick="confirmStartZone(${z})" class="w-full py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
-                 <i class="ti ti-player-play text-xs"></i> สั่งรดน้ำทันที
+            : `<button onclick="confirmStartZone(${z})" class="py-1 bg-forest-50 text-forest-700 hover:bg-forest-100 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1">
+                 <i class="ti ti-player-play text-xs"></i> รดน้ำ
                </button>`
           }
+          <button onclick="openZoneSettings(${z})" class="py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1" title="เปิดหน้าตั้งเวลาและโหมดของโซนนี้">
+            <i class="ti ti-clock text-xs text-forest-700"></i> ตั้งเวลา
+          </button>
         </div>
       </div>
     `;
@@ -721,6 +742,12 @@ function renderDashboardZoneCards(zones) {
 function renderZoneControls(data) {
   const container = document.getElementById('zoneControlsList');
   if (!container) return;
+
+  // Don't re-render and steal focus if user is actively editing inside an input/select
+  const activeEl = document.activeElement;
+  if (activeEl && container.contains(activeEl) && ['INPUT', 'SELECT'].includes(activeEl.tagName)) {
+    return;
+  }
 
   const d = data || state.lastData || {
     zones: [
@@ -747,7 +774,12 @@ function renderZoneControls(data) {
       state.zoneModes[z] = 1;
     }
 
+    const isExpanded = !!state.expandedZoneSettings?.[z];
+    const schedList = state.zoneSchedules?.[z] || [];
+    const schedCount = schedList.length;
+
     const card = document.createElement('div');
+    card.id = `zoneCard_${z}`;
     card.className = `p-4 rounded-3xl border transition-all duration-300 ${
       isRunning 
         ? 'bg-emerald-50/60 border-emerald-300 shadow-md shadow-emerald-900/5 ring-1 ring-emerald-300' 
@@ -769,14 +801,16 @@ function renderZoneControls(data) {
 
     // Soil Moisture for Zone 0-2, Drip badge for Zone 3
     let soilRow = '';
+    let soilMoistText = '--';
     if (z < 3) {
       const sVal = d.soil ? d.soil[z] : null;
       const sErr = d.soilError?.[z] || sVal === null || sVal === undefined || isNaN(sVal) || sVal < 0;
+      soilMoistText = sErr ? 'ไม่ได้เชื่อมต่อ' : (typeof sVal === 'number' && !isNaN(sVal) ? sVal.toFixed(0) + '%' : '--');
       soilRow = `
         <div class="bg-surface-subtle p-2 rounded-xl text-center">
           <span class="text-[10px] text-slate-400 block font-medium">ความชื้นดิน</span>
           <span class="text-xs font-bold ${sErr ? 'text-slate-400 text-[10px]' : 'text-emerald-700 font-mono'}">
-            ${sErr ? 'ไม่ได้เชื่อมต่อ' : (typeof sVal === 'number' && !isNaN(sVal) ? sVal.toFixed(0) + '%' : '--')}
+            ${soilMoistText}
           </span>
         </div>
       `;
@@ -814,6 +848,168 @@ function renderZoneControls(data) {
         </button>
       </div>
     `;
+
+    // Accordion content if expanded
+    let settingsDrawerHtml = '';
+    if (isExpanded) {
+      const cfg = state.configData?.zones?.[z] || {
+        moistureStart: 35,
+        moistureStop: 55
+      };
+      const moistStart = cfg.moistureStart ?? 35;
+      const moistStop = cfg.moistureStop ?? 55;
+
+      let smartThresholdBox = '';
+      if (z < 3 && currentMode === 2) {
+        smartThresholdBox = `
+          <div class="p-3 bg-sky-50/80 border border-sky-200/90 rounded-2xl space-y-2 text-xs mb-3">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sky-900 flex items-center gap-1.5">
+                <i class="ti ti-sparkles text-sky-600"></i> เกณฑ์ความชื้นดิน (โหมด SMART)
+              </span>
+              <span class="text-[11px] text-sky-700">ปัจจุบัน: <b>${soilMoistText}</b></span>
+            </div>
+            <div class="grid grid-cols-2 gap-2 pt-1">
+              <div>
+                <label class="text-[10px] text-slate-500 font-semibold block mb-0.5">เริ่มรดเมื่อต่ำกว่า (%):</label>
+                <input type="number" min="0" max="100" value="${moistStart}" onchange="updateZoneMoistureThresholds(${z})" id="zoneMoistStart_${z}" class="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-800 text-center outline-none focus:ring-1 focus:ring-forest-500">
+              </div>
+              <div>
+                <label class="text-[10px] text-slate-500 font-semibold block mb-0.5">หยุดรดเมื่อถึง (%):</label>
+                <input type="number" min="0" max="100" value="${moistStop}" onchange="updateZoneMoistureThresholds(${z})" id="zoneMoistStop_${z}" class="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-800 text-center outline-none focus:ring-1 focus:ring-forest-500">
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      let slotsHtml = '';
+      if (schedList.length === 0) {
+        slotsHtml = `
+          <div class="p-4 text-center bg-white rounded-2xl border border-dashed border-slate-300 text-slate-400 text-xs">
+            <i class="ti ti-clock-off text-2xl mb-1 block"></i>
+            ยังไม่มีช่วงเวลารดน้ำ กดปุ่ม <b>"+ เพิ่มช่วงเวลารดน้ำ"</b> ด้านล่างเพื่อเพิ่ม
+          </div>
+        `;
+      } else {
+        slotsHtml = schedList.map((sch, s) => {
+          return `
+            <div class="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2.5">
+              <div class="flex items-center justify-between pb-1.5 border-b border-slate-100">
+                <div class="flex items-center gap-1.5">
+                  <span class="w-5 h-5 rounded-md bg-forest-100 text-forest-700 text-[11px] font-bold flex items-center justify-center">
+                    ${s + 1}
+                  </span>
+                  <span class="text-xs font-bold text-slate-800">ช่วงเวลาที่ ${s + 1}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button type="button" onclick="removeZoneScheduleSlot(${z}, ${s})" class="text-rose-500 hover:text-rose-700 text-[11px] font-semibold flex items-center gap-0.5 px-1.5 py-0.5 rounded-md hover:bg-rose-50 transition" title="ลบช่วงเวลานี้">
+                    <i class="ti ti-trash text-xs"></i> <span>ลบ</span>
+                  </button>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="schEnabled_${z}_${s}" ${sch.enabled ? 'checked' : ''} onchange="updateZoneSlotFromInputs(${z}, ${s})" class="sr-only peer">
+                    <div class="w-8 h-4.5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-forest-600"></div>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Time & Duration -->
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                    <i class="ti ti-clock text-forest-600"></i> เวลาเริ่ม (24 ชม.):
+                  </label>
+                  <div class="flex items-center gap-0.5 bg-surface-subtle border border-slate-200 rounded-xl p-1">
+                    <select id="schHour_${z}_${s}" onchange="updateZoneSlotFromInputs(${z}, ${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1 text-center text-xs font-bold text-slate-800 outline-none">
+                      ${Array.from({length: 24}, (_, i) => `<option value="${i}" ${sch.hour === i ? 'selected' : ''}>${String(i).padStart(2,'0')}</option>`).join('')}
+                    </select>
+                    <span class="font-bold text-slate-400 text-xs">:</span>
+                    <select id="schMin_${z}_${s}" onchange="updateZoneSlotFromInputs(${z}, ${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1 text-center text-xs font-bold text-slate-800 outline-none">
+                      ${Array.from({length: 60}, (_, i) => `<option value="${i}" ${sch.minute === i ? 'selected' : ''}>${String(i).padStart(2,'0')}</option>`).join('')}
+                    </select>
+                    <span class="text-[10px] font-bold text-slate-500 pr-1">น.</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="text-[10px] font-semibold text-slate-500 block mb-0.5">ระยะเวลารด:</label>
+                  <div class="flex items-center gap-1">
+                    <button type="button" onclick="stepZoneSlotDuration(${z}, ${s}, -1)" class="stepper-btn" title="ลด 1 นาที">-</button>
+                    <div class="flex-1 text-center bg-surface-subtle border border-slate-200 rounded-xl py-1">
+                      <span id="schDurDisplay_${z}_${s}" class="font-bold text-xs text-slate-800">${sch.duration || 10}</span>
+                      <span class="text-[9px] text-slate-500 ml-0.5 font-bold">น.</span>
+                    </div>
+                    <button type="button" onclick="stepZoneSlotDuration(${z}, ${s}, 1)" class="stepper-btn" title="เพิ่ม 1 นาที">+</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quick Presets -->
+              <div class="flex flex-wrap items-center justify-between gap-1 pt-0.5">
+                <div class="flex items-center gap-1">
+                  <span class="text-[9px] text-slate-400">เวลาด่วน:</span>
+                  ${[
+                    { l: '06:00', h: 6, m: 0 },
+                    { l: '12:00', h: 12, m: 0 },
+                    { l: '17:00', h: 17, m: 0 }
+                  ].map(p => `
+                    <button type="button" onclick="setZoneSlotTimePreset(${z}, ${s}, ${p.h}, ${p.m})" class="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-slate-100 hover:bg-forest-100 text-slate-600 transition">
+                      ${p.l}
+                    </button>
+                  `).join('')}
+                </div>
+                <div class="flex items-center gap-1">
+                  <span class="text-[9px] text-slate-400">ระยะ:</span>
+                  ${[5, 10, 15, 30].map(m => `
+                    <button type="button" onclick="setZoneSlotDuration(${z}, ${s}, ${m})" class="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-slate-100 hover:bg-emerald-100 text-slate-600 transition">
+                      ${m}น.
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+
+              <!-- 7 Days Chips -->
+              <div>
+                <span class="text-[10px] font-semibold text-slate-500 block mb-1">ทำซ้ำในวัน:</span>
+                <div class="flex items-center justify-between gap-1">
+                  ${DAY_LABELS.map((day, dIdx) => {
+                    const isDayActive = ((sch.days ?? 127) & (1 << dIdx)) !== 0;
+                    return `
+                      <button type="button" onclick="toggleZoneSlotDay(${z}, ${s}, ${dIdx})" id="dayBtn_${z}_${s}_${dIdx}" class="day-chip ${isDayActive ? 'active' : 'inactive'}">
+                        ${day}
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      settingsDrawerHtml = `
+        <div class="mt-3.5 pt-3 border-t border-slate-200/80 space-y-3 animate-in fade-in duration-200">
+          ${smartThresholdBox}
+          <div class="space-y-2">
+            ${slotsHtml}
+          </div>
+
+          <!-- Bottom Actions in Drawer -->
+          <div class="flex gap-2 pt-1">
+            ${schedCount < 4 ? `
+              <button type="button" onclick="addZoneScheduleSlot(${z})" class="flex-1 py-2 px-3 rounded-xl bg-forest-50 hover:bg-forest-100 text-forest-800 border border-forest-200 text-xs font-bold flex items-center justify-center gap-1.5 transition">
+                <i class="ti ti-plus text-sm"></i>
+                <span>เพิ่มช่วงเวลา (${schedCount}/4)</span>
+              </button>
+            ` : ''}
+            <button type="button" onclick="saveZoneScheduleAndConfig(${z}, true)" class="flex-1 py-2 px-3 rounded-xl bg-forest-700 hover:bg-forest-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95">
+              <i class="ti ti-device-floppy text-sm"></i>
+              <span>บันทึกโซนนี้</span>
+            </button>
+          </div>
+        </div>
+      `;
+    }
 
     card.innerHTML = `
       <div class="flex items-center justify-between mb-3">
@@ -869,7 +1065,7 @@ function renderZoneControls(data) {
             <span>หยุดรดน้ำทันที</span>
           </button>
         </div>
-      ` : currentMode === 1 ? `
+      ` : `
         <div class="mt-3 pt-3 border-t border-slate-100">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-semibold text-slate-600">เลือกระยะเวลารดน้ำ:</span>
@@ -888,20 +1084,24 @@ function renderZoneControls(data) {
             <span>เริ่มเปิดน้ำ ${ZONE_SHORT_NAMES[z]} (${duration} นาที)</span>
           </button>
         </div>
-      ` : currentMode === 2 ? `
-        <div class="mt-2.5 p-3 rounded-2xl bg-sky-50 border border-sky-100 flex items-center justify-between text-xs">
-          <span class="text-sky-800 font-medium flex items-center gap-1.5">
-            <i class="ti ti-clock-check text-sky-600 text-base"></i> ทำงานอัตโนมัติตามตารางเวลา/ความชื้น
-          </span>
-          <button onclick="switchTab('pageSchedule')" class="text-sky-700 font-bold underline hover:text-sky-900">
-            ตั้งเวลา
-          </button>
-        </div>
-      ` : `
-        <div class="mt-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
-          <i class="ti ti-circle-off text-slate-400 mr-1"></i> โซนนี้ปิดการทำงานอยู่ (OFF) แตะ TIMER เพื่อเปิดใช้งาน
-        </div>
       `}
+
+      <!-- Expandable Accordion for Schedule & Smart Settings -->
+      <div class="mt-3 pt-2.5 border-t border-slate-100">
+        <button type="button" onclick="toggleZoneSettings(${z})" class="w-full py-2.5 px-3 rounded-2xl bg-slate-50 hover:bg-forest-50 text-slate-700 hover:text-forest-900 border border-slate-200/70 flex items-center justify-between transition">
+          <span class="text-xs font-bold flex items-center gap-1.5">
+            <i class="ti ti-calendar-time text-emerald-600 text-base"></i>
+            <span>ตั้งเวลา & การทำงานอัตโนมัติ</span>
+            <span class="text-[10px] font-semibold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">${schedCount}/4 ช่วงเวลา</span>
+          </span>
+          <span class="flex items-center gap-1 text-xs font-semibold text-slate-500">
+            <span>${isExpanded ? 'ย่อลง' : 'แก้ไข'}</span>
+            <i class="ti ti-chevron-${isExpanded ? 'up' : 'down'} text-sm transition-transform"></i>
+          </span>
+        </button>
+
+        ${settingsDrawerHtml}
+      </div>
     `;
 
     container.appendChild(card);
@@ -915,6 +1115,8 @@ function setZoneMode(zoneIndex, mode) {
     mode = 1;
   }
   state.zoneModes[zoneIndex] = mode;
+  if (!state.lastUserModeChange) state.lastUserModeChange = [0, 0, 0, 0];
+  state.lastUserModeChange[zoneIndex] = Date.now(); // Record user action to lock against echo bounce
   const isEnabled = (mode !== 0);
 
   // Sync with state.configData as well
@@ -1113,354 +1315,33 @@ function syncTimeToEsp32(silent = false) {
 window.syncTimeToEsp32 = syncTimeToEsp32;
 
 // ================================================================
-//  SCHEDULE & CONFIGURATION PAGE (Dynamic Slots + Add/Remove Slot)
+//  UNIFIED ZONE SCHEDULE & CONFIGURATION MANAGEMENT
 // ================================================================
 
-// Switch Zone Tabs in Schedule Page
-document.querySelectorAll('#schedZoneSelector button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#schedZoneSelector button').forEach(b => {
-      b.className = 'flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 text-slate-600 hover:text-slate-900';
-    });
-    btn.className = 'flex-1 py-1.5 text-xs font-semibold rounded-xl transition-all duration-200 bg-white text-forest-800 shadow-xs active-pill';
-    state.selectedZone = parseInt(btn.dataset.zone);
-    renderScheduleSettings();
-  });
-});
-
-function renderScheduleSettings() {
-  const z = state.selectedZone;
-  let currentMode = state.zoneModes[z] ?? 1;
-  if (z === 3 && currentMode === 2) {
-    currentMode = 1;
-    state.zoneModes[z] = 1;
-  }
-
-  const cfg = state.configData?.zones?.[z] || {
-    enabled: true,
-    mode: currentMode,
-    moistureStart: 35,
-    moistureStop: 55,
-  };
-
-  // Inputs
-  const enabledInput = document.getElementById('cfgZoneEnabled');
-  const modeInput = document.getElementById('cfgZoneMode');
-  const moistBox = document.getElementById('smartMoistureBox');
-  const moistStartInput = document.getElementById('cfgMoistStart');
-  const moistStopInput = document.getElementById('cfgMoistStop');
-
-  if (enabledInput) enabledInput.checked = (currentMode !== 0);
-  if (modeInput) modeInput.value = currentMode;
-
-  // Badge & Segmented Controls in Schedule Page
-  const modeBadgeEl = document.getElementById('cfgZoneModeBadge');
-  if (modeBadgeEl) {
-    if (currentMode === 0) {
-      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-500';
-      modeBadgeEl.textContent = 'ปิด (OFF)';
-    } else if (currentMode === 1) {
-      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200';
-      modeBadgeEl.textContent = 'ตามเวลา (TIMER)';
-    } else {
-      modeBadgeEl.className = 'text-xs font-semibold px-2.5 py-1 rounded-full bg-sky-50 text-sky-800 border border-sky-200';
-      modeBadgeEl.textContent = 'ความชื้นดิน (SMART)';
-    }
-  }
-
-  const segmentedContainer = document.getElementById('cfgZoneModeSegmented');
-  if (segmentedContainer) {
-    if (z < 3) {
-      segmentedContainer.innerHTML = `
-        <div class="mode-segmented">
-          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
-            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
-            <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 2)" class="mode-btn ${currentMode === 2 ? 'active-auto' : ''}">
-            <i class="ti ti-sparkles text-xs mr-0.5"></i> SMART (ความชื้นดิน)
-          </button>
-        </div>
-      `;
-    } else {
-      segmentedContainer.innerHTML = `
-        <div class="mode-segmented grid-cols-2">
-          <button type="button" onclick="setZoneMode(${z}, 0)" class="mode-btn ${currentMode === 0 ? 'active-off' : ''}">
-            <i class="ti ti-power text-xs mr-0.5"></i> OFF (ปิด)
-          </button>
-          <button type="button" onclick="setZoneMode(${z}, 1)" class="mode-btn ${currentMode === 1 ? 'active-manual' : ''}">
-            <i class="ti ti-clock text-xs mr-0.5"></i> TIMER (ตามเวลา)
-          </button>
-        </div>
-      `;
-    }
-  }
-
-  if (moistStartInput) moistStartInput.value = cfg.moistureStart ?? 35;
-  if (moistStopInput) moistStopInput.value = cfg.moistureStop ?? 55;
-
-  if (moistBox) {
-    if (z < 3 && currentMode === 2) {
-      moistBox.classList.remove('hidden');
-    } else {
-      moistBox.classList.add('hidden');
-    }
-  }
-
-  // Selected Zone Status / Soil Moisture Banner
-  const bannerEl = document.getElementById('schedZoneBanner');
-  if (bannerEl) {
-    if (z === 3) {
-      bannerEl.innerHTML = `
-        <div class="p-3 bg-sky-50 border border-sky-200/90 rounded-2xl text-xs text-sky-900 flex items-start gap-2.5 shadow-2xs">
-          <i class="ti ti-droplet-half-2 text-sky-600 text-lg flex-shrink-0 mt-0.5"></i>
-          <div>
-            <span class="font-bold block text-sky-950">Zone 4 (ระบบน้ำหยด) — ตั้งเวลาเท่านั้น</span>
-            <p class="text-[11px] text-sky-700 mt-0.5 leading-relaxed">
-              โซนนี้เป็นระบบน้ำหยด ไม่มีเซ็นเซอร์วัดความชื้นดิน การทำงานจะเปิด-ปิดตาม<b>ตารางเวลา (TIMER)</b> ที่กำหนดไว้ด้านล่างนี้
-            </p>
-          </div>
-        </div>
-      `;
-    } else {
-      const sVal = state.lastData?.soil?.[z];
-      const sErr = state.lastData?.soilError?.[z] || sVal === null || sVal === undefined || isNaN(sVal) || sVal < 0;
-      const isConnected = !sErr && typeof sVal === 'number' && sVal >= 0;
-      bannerEl.innerHTML = `
-        <div class="p-2.5 bg-forest-50/70 border border-forest-100 rounded-2xl text-xs text-forest-900 flex items-center justify-between shadow-2xs">
-          <span class="flex items-center gap-1.5 font-semibold text-slate-700">
-            <i class="ti ti-seeding text-forest-700 text-base"></i> ความชื้นดิน ${ZONE_SHORT_NAMES[z]} ปัจจุบัน:
-          </span>
-          <span class="font-mono font-bold ${isConnected ? 'text-forest-800 text-sm' : 'text-slate-400 text-xs'}">
-            ${isConnected ? sVal.toFixed(0) + '%' : 'ไม่ได้เชื่อมต่อเซ็นเซอร์'}
-          </span>
-        </div>
-      `;
-    }
-  }
-
-  // Flow Protection setting
-  const fpEl = document.getElementById('cfgFlowProtection');
-  if (fpEl) {
-    fpEl.checked = !!state.configData?.flowProtection;
-  }
-
-  // Get active schedules for this zone
-  if (!state.zoneSchedules[z]) {
-    state.zoneSchedules[z] = [{ enabled: true, hour: 6, minute: 0, duration: 10, days: 127 }];
-  }
-
-  renderScheduleSlots(state.zoneSchedules[z]);
-}
-
-document.getElementById('cfgZoneMode')?.addEventListener('change', (e) => {
-  let val = parseInt(e.target.value);
-  if (state.selectedZone === 3 && val === 2) {
-    val = 1;
-  }
-  state.zoneModes[state.selectedZone] = val;
-
-  // Update in memory config
-  if (!state.configData) state.configData = { zones: [] };
-  if (!state.configData.zones) state.configData.zones = [];
-  if (!state.configData.zones[state.selectedZone]) state.configData.zones[state.selectedZone] = {};
-  state.configData.zones[state.selectedZone].mode = val;
-
-  const moistBox = document.getElementById('smartMoistureBox');
-  if (moistBox) {
-    if (val === 2 && state.selectedZone < 3) {
-      moistBox.classList.remove('hidden');
-    } else {
-      moistBox.classList.add('hidden');
-    }
-  }
-
-  // Update dashboard and control cards simultaneously
-  renderDashboardZoneCards(state.lastData?.zones || []);
+// Toggle Accordion Drawer for Zone z
+function toggleZoneSettings(z) {
+  if (!state.expandedZoneSettings) state.expandedZoneSettings = [false, false, false, false];
+  state.expandedZoneSettings[z] = !state.expandedZoneSettings[z];
   renderZoneControls(state.lastData);
-});
-
-// Auto-sync moisture threshold inputs to Firebase when changed
-['cfgMoistStart', 'cfgMoistStop'].forEach(id => {
-  document.getElementById(id)?.addEventListener('change', () => {
-    const z = state.selectedZone;
-    const startVal = parseInt(document.getElementById('cfgMoistStart')?.value) || 35;
-    const stopVal = parseInt(document.getElementById('cfgMoistStop')?.value) || 55;
-    if (!state.configData) state.configData = { zones: [] };
-    if (!state.configData.zones) state.configData.zones = [];
-    if (!state.configData.zones[z]) state.configData.zones[z] = {};
-    state.configData.zones[z].moistureStart = startVal;
-    state.configData.zones[z].moistureStop = stopVal;
-
-    const updates = {};
-    updates[`devices/esp32/config/z${z}_moistStart`] = startVal;
-    updates[`devices/esp32/config/z${z}_moistStop`] = stopVal;
-    updates[`devices/esp32/config/zones/${z}/moistureStart`] = startVal;
-    updates[`devices/esp32/config/zones/${z}/moistureStop`] = stopVal;
-    updates[`devices/esp32/config/configVersion`] = Math.floor(Date.now() / 1000);
-    db.ref().update(updates).catch(err => handleFirebaseError(err, 'updateMoistureThresholds'));
-  });
-});
-
-// Render dynamic schedule slots (Show ONLY active slots, not all 4 hardcoded)
-function renderScheduleSlots(schedules) {
-  const container = document.getElementById('scheduleSlotsList');
-  const countBadge = document.getElementById('schedSlotCountBadge');
-  const btnAdd = document.getElementById('btnAddScheduleSlot');
-  if (!container) return;
-
-  container.innerHTML = '';
-  const count = schedules.length;
-
-  if (countBadge) {
-    countBadge.textContent = `${count} / 4 ช่วง`;
-  }
-
-  // Hide or disable + Add button if maximum 4 slots reached
-  if (btnAdd) {
-    if (count >= 4) {
-      btnAdd.classList.add('opacity-50', 'pointer-events-none');
-    } else {
-      btnAdd.classList.remove('opacity-50', 'pointer-events-none');
-    }
-  }
-
-  if (count === 0) {
-    container.innerHTML = `
-      <div class="p-6 text-center bg-white rounded-2xl border border-dashed border-slate-300 text-slate-400 text-xs">
-        <i class="ti ti-clock-off text-2xl mb-1 block"></i>
-        ยังไม่มีช่วงเวลารดน้ำ กดปุ่ม <b>"+ เพิ่มช่วงเวลารดน้ำ"</b> ด้านล่างเพื่อเพิ่ม
-      </div>
-    `;
-    return;
-  }
-
-  schedules.forEach((sch, s) => {
-    const timeStr = `${String(sch.hour).padStart(2, '0')}:${String(sch.minute).padStart(2, '0')}`;
-    const card = document.createElement('div');
-
-    card.className = 'bg-white rounded-3xl p-4 border border-slate-200/90 shadow-xs space-y-3.5 transition-all';
-    card.innerHTML = `
-      <!-- Slot Header: Title, Delete Button & Enable Switch -->
-      <div class="flex items-center justify-between pb-2 border-b border-slate-100">
-        <div class="flex items-center gap-2">
-          <span class="w-6 h-6 rounded-lg bg-forest-100 text-forest-700 text-xs font-bold flex items-center justify-center">
-            ${s + 1}
-          </span>
-          <span class="text-xs font-bold text-slate-800">
-            ช่วงเวลาที่ ${s + 1}
-          </span>
-        </div>
-        <div class="flex items-center gap-3">
-          <button type="button" onclick="removeScheduleSlot(${s})" class="text-rose-500 hover:text-rose-700 text-xs font-semibold flex items-center gap-1 transition px-2 py-1 rounded-lg hover:bg-rose-50" title="ลบช่วงเวลานี้">
-            <i class="ti ti-trash text-sm"></i> <span>ลบ</span>
-          </button>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" id="schEnabled_${s}" ${sch.enabled ? 'checked' : ''} onchange="updateScheduleSlotState(${s})" class="sr-only peer">
-            <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-forest-600"></div>
-          </label>
-        </div>
-      </div>
-
-      <!-- Time Picker & Duration Stepper (Mobile Touch Friendly) -->
-      <div class="grid grid-cols-2 gap-3">
-        <!-- 24-Hour Time Picker (No AM/PM) -->
-        <div>
-          <label class="text-[11px] font-semibold text-slate-600 block mb-1">
-            <i class="ti ti-clock text-xs text-forest-600 mr-0.5"></i> เวลาเริ่ม (ระบบ 24 ชม.):
-          </label>
-          <div class="flex items-center gap-1 bg-surface-subtle border border-slate-200 rounded-xl p-1 focus-within:ring-2 focus-within:ring-forest-500">
-            <!-- Hour Select (00-23) -->
-            <select id="schHour_${s}" onchange="updateScheduleSlotState(${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1.5 px-1 text-center text-xs font-bold text-slate-800 outline-none cursor-pointer focus:border-forest-500">
-              ${Array.from({length: 24}, (_, i) => {
-                const hStr = String(i).padStart(2, '0');
-                return `<option value="${i}" ${sch.hour === i ? 'selected' : ''}>${hStr}</option>`;
-              }).join('')}
-            </select>
-            <span class="font-bold text-slate-400 text-xs">:</span>
-            <!-- Minute Select (00-59) -->
-            <select id="schMin_${s}" onchange="updateScheduleSlotState(${s})" class="flex-1 bg-white border border-slate-200 rounded-lg py-1.5 px-1 text-center text-xs font-bold text-slate-800 outline-none cursor-pointer focus:border-forest-500">
-              ${Array.from({length: 60}, (_, i) => {
-                const mStr = String(i).padStart(2, '0');
-                return `<option value="${i}" ${sch.minute === i ? 'selected' : ''}>${mStr}</option>`;
-              }).join('')}
-            </select>
-            <span class="text-[10px] font-bold text-slate-500 pr-1 select-none">น.</span>
-          </div>
-          <input type="hidden" id="schTime_${s}" value="${timeStr}">
-        </div>
-
-        <!-- Duration Stepper [-] 10 นาที [+] -->
-        <div>
-          <label class="text-[11px] font-semibold text-slate-600 block mb-1">ระยะเวลารด:</label>
-          <div class="flex items-center gap-1.5">
-            <button type="button" onclick="stepScheduleDuration(${s}, -1)" class="stepper-btn" title="ลด 1 นาที">
-              -
-            </button>
-            <div class="flex-1 text-center bg-surface-subtle border border-slate-200 rounded-xl py-1.5">
-              <span id="schDurDisplay_${s}" class="font-bold text-xs text-slate-800">${sch.duration || 10}</span>
-              <span class="text-[10px] text-slate-500 ml-0.5 font-bold">นาที</span>
-              <input type="hidden" id="schDur_${s}" value="${sch.duration || 10}">
-            </div>
-            <button type="button" onclick="stepScheduleDuration(${s}, 1)" class="stepper-btn" title="เพิ่ม 1 นาที">
-              +
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Quick Preset Chips: Time & Duration -->
-      <div class="flex flex-wrap items-center justify-between gap-y-1 gap-x-2 pt-0.5">
-        <div class="flex items-center gap-1">
-          <span class="text-[10px] text-slate-400">เวลาด่วน:</span>
-          ${[
-            { label: '06:00', h: 6, m: 0 },
-            { label: '12:00', h: 12, m: 0 },
-            { label: '17:00', h: 17, m: 0 },
-            { label: '20:00', h: 20, m: 0 }
-          ].map(p => `
-            <button type="button" onclick="setScheduleTimePreset(${s}, ${p.h}, ${p.m})" class="px-1.5 py-0.5 text-[10px] font-semibold rounded-md bg-slate-100 hover:bg-forest-100 hover:text-forest-800 text-slate-600 transition">
-              ${p.label}
-            </button>
-          `).join('')}
-        </div>
-        <div class="flex items-center gap-1">
-          <span class="text-[10px] text-slate-400">ระยะเวลา:</span>
-          ${[5, 10, 15, 20, 30].map(m => `
-            <button type="button" onclick="setScheduleDuration(${s}, ${m})" class="px-1.5 py-0.5 text-[10px] font-semibold rounded-md bg-slate-100 hover:bg-emerald-100 hover:text-forest-800 text-slate-600 transition">
-              ${m} นาที
-            </button>
-          `).join('')}
-        </div>
-      </div>
-
-      <!-- 7 Days of the Week (Touch Friendly Circular Chips) -->
-      <div>
-        <span class="text-[11px] font-semibold text-slate-600 block mb-1.5">ทำซ้ำในวัน:</span>
-        <div class="flex items-center justify-between gap-1">
-          ${DAY_LABELS.map((day, dIdx) => {
-            const isDayActive = (sch.days & (1 << dIdx)) !== 0;
-            return `
-              <button type="button" onclick="toggleScheduleDay(${s}, ${dIdx})" id="dayBtn_${s}_${dIdx}" data-active="${isDayActive ? '1' : '0'}" class="day-chip ${isDayActive ? 'active' : 'inactive'}">
-                ${day}
-              </button>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
-
-    container.appendChild(card);
-  });
 }
 
-// Add a new dynamic schedule slot (Max 4)
-function addNewScheduleSlot() {
-  const z = state.selectedZone;
+// Open Zone Settings directly (e.g. from Dashboard "ตั้งเวลา" button)
+function openZoneSettings(z) {
+  switchTab('pageZones');
+  if (!state.expandedZoneSettings) state.expandedZoneSettings = [false, false, false, false];
+  state.expandedZoneSettings = [false, false, false, false];
+  state.expandedZoneSettings[z] = true;
+  state.selectedZone = z;
+  renderZoneControls(state.lastData);
+  setTimeout(() => {
+    const el = document.getElementById(`zoneCard_${z}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+}
+
+// Add a schedule slot (Max 4 slots per zone)
+function addZoneScheduleSlot(z) {
   if (!state.zoneSchedules[z]) state.zoneSchedules[z] = [];
-  
   if (state.zoneSchedules[z].length >= 4) {
     Swal.fire({
       icon: 'info',
@@ -1470,8 +1351,6 @@ function addNewScheduleSlot() {
     });
     return;
   }
-
-  // Suggest intelligent default time based on slot index
   const defaults = [
     { hour: 6, minute: 0 },
     { hour: 11, minute: 30 },
@@ -1480,16 +1359,15 @@ function addNewScheduleSlot() {
   ];
   const nextIdx = state.zoneSchedules[z].length;
   const def = defaults[nextIdx] || { hour: 8, minute: 0 };
-
   state.zoneSchedules[z].push({
     enabled: true,
     hour: def.hour,
     minute: def.minute,
     duration: 10,
-    days: 127 // all 7 days by default
+    days: 127 // all 7 days
   });
-
-  renderScheduleSlots(state.zoneSchedules[z]);
+  renderZoneControls(state.lastData);
+  saveZoneScheduleAndConfig(z, false);
 
   Swal.fire({
     toast: true,
@@ -1497,164 +1375,124 @@ function addNewScheduleSlot() {
     icon: 'success',
     title: `เพิ่มช่วงเวลารดน้ำที่ ${state.zoneSchedules[z].length} แล้ว 🌿`,
     showConfirmButton: false,
-    timer: 1800
+    timer: 1500
   });
 }
 
-// Remove a dynamic schedule slot
-function removeScheduleSlot(slotIndex) {
-  const z = state.selectedZone;
+// Remove schedule slot
+function removeZoneScheduleSlot(z, slotIdx) {
   if (!state.zoneSchedules[z]) return;
-
-  state.zoneSchedules[z].splice(slotIndex, 1);
-  renderScheduleSlots(state.zoneSchedules[z]);
+  state.zoneSchedules[z].splice(slotIdx, 1);
+  renderZoneControls(state.lastData);
+  saveZoneScheduleAndConfig(z, false);
 
   Swal.fire({
     toast: true,
     position: 'top',
     icon: 'info',
-    title: `ลบช่วงเวลารดน้ำเรียบร้อย`,
+    title: 'ลบช่วงเวลารดน้ำเรียบร้อย',
     showConfirmButton: false,
-    timer: 1500
+    timer: 1200
   });
 }
 
-// Stepper duration +/-
-function stepScheduleDuration(slotIndex, delta) {
-  const z = state.selectedZone;
-  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
-
-  const current = state.zoneSchedules[z][slotIndex].duration || 10;
-  const next = Math.max(1, Math.min(120, current + delta));
-  state.zoneSchedules[z][slotIndex].duration = next;
-
-  const display = document.getElementById(`schDurDisplay_${slotIndex}`);
-  const input = document.getElementById(`schDur_${slotIndex}`);
-  if (display) display.textContent = next;
-  if (input) input.value = next;
+// Step duration +/- 1 min
+function stepZoneSlotDuration(z, slotIdx, delta) {
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIdx]) return;
+  const cur = state.zoneSchedules[z][slotIdx].duration || 10;
+  const next = Math.max(1, Math.min(120, cur + delta));
+  state.zoneSchedules[z][slotIdx].duration = next;
+  const el = document.getElementById(`schDurDisplay_${z}_${slotIdx}`);
+  if (el) el.textContent = next;
+  saveZoneScheduleAndConfig(z, false);
 }
 
-function setScheduleDuration(slotIndex, minutes) {
-  const z = state.selectedZone;
-  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
-
-  state.zoneSchedules[z][slotIndex].duration = minutes;
-  const display = document.getElementById(`schDurDisplay_${slotIndex}`);
-  const input = document.getElementById(`schDur_${slotIndex}`);
-  if (display) display.textContent = minutes;
-  if (input) input.value = minutes;
+// Quick duration preset
+function setZoneSlotDuration(z, slotIdx, mins) {
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIdx]) return;
+  state.zoneSchedules[z][slotIdx].duration = mins;
+  const el = document.getElementById(`schDurDisplay_${z}_${slotIdx}`);
+  if (el) el.textContent = mins;
+  saveZoneScheduleAndConfig(z, false);
 }
 
-// Quick 24h Time Preset (e.g. 06:00, 12:00, 17:00, 20:00)
-function setScheduleTimePreset(slotIndex, hour, minute) {
-  const hEl = document.getElementById(`schHour_${slotIndex}`);
-  const mEl = document.getElementById(`schMin_${slotIndex}`);
+// Quick 24h time preset
+function setZoneSlotTimePreset(z, slotIdx, hour, min) {
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIdx]) return;
+  state.zoneSchedules[z][slotIdx].hour = hour;
+  state.zoneSchedules[z][slotIdx].minute = min;
+  const hEl = document.getElementById(`schHour_${z}_${slotIdx}`);
+  const mEl = document.getElementById(`schMin_${z}_${slotIdx}`);
   if (hEl) hEl.value = hour;
-  if (mEl) mEl.value = minute;
-  updateScheduleSlotState(slotIndex);
+  if (mEl) mEl.value = min;
+  saveZoneScheduleAndConfig(z, false);
 }
 
-// Update slot in memory when inputs change
-function updateScheduleSlotState(slotIndex) {
-  const z = state.selectedZone;
-  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
-
-  const enabled = document.getElementById(`schEnabled_${slotIndex}`)?.checked ?? true;
-  const hEl = document.getElementById(`schHour_${slotIndex}`);
-  const mEl = document.getElementById(`schMin_${slotIndex}`);
-
-  let h = 6;
-  let m = 0;
-  if (hEl && mEl) {
-    h = parseInt(hEl.value, 10);
-    m = parseInt(mEl.value, 10);
-  } else {
-    const timeVal = document.getElementById(`schTime_${slotIndex}`)?.value || '06:00';
-    const parts = timeVal.split(':').map(Number);
-    h = parts[0] || 0;
-    m = parts[1] || 0;
-  }
-
-  state.zoneSchedules[z][slotIndex].enabled = enabled;
-  state.zoneSchedules[z][slotIndex].hour = isNaN(h) ? 0 : h;
-  state.zoneSchedules[z][slotIndex].minute = isNaN(m) ? 0 : m;
-
-  const hidden = document.getElementById(`schTime_${slotIndex}`);
-  if (hidden) {
-    hidden.value = `${String(state.zoneSchedules[z][slotIndex].hour).padStart(2, '0')}:${String(state.zoneSchedules[z][slotIndex].minute).padStart(2, '0')}`;
-  }
+// Update slot in memory from user input changes
+function updateZoneSlotFromInputs(z, slotIdx) {
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIdx]) return;
+  const enEl = document.getElementById(`schEnabled_${z}_${slotIdx}`);
+  const hEl = document.getElementById(`schHour_${z}_${slotIdx}`);
+  const mEl = document.getElementById(`schMin_${z}_${slotIdx}`);
+  if (enEl) state.zoneSchedules[z][slotIdx].enabled = enEl.checked;
+  if (hEl) state.zoneSchedules[z][slotIdx].hour = parseInt(hEl.value, 10) || 0;
+  if (mEl) state.zoneSchedules[z][slotIdx].minute = parseInt(mEl.value, 10) || 0;
+  saveZoneScheduleAndConfig(z, false);
 }
 
-// Toggle active day chip
-function toggleScheduleDay(slotIndex, dayIndex) {
-  const btn = document.getElementById(`dayBtn_${slotIndex}_${dayIndex}`);
-  const z = state.selectedZone;
-  if (!btn || !state.zoneSchedules[z] || !state.zoneSchedules[z][slotIndex]) return;
+// Toggle day of the week bitmask
+function toggleZoneSlotDay(z, slotIdx, dayIdx) {
+  if (!state.zoneSchedules[z] || !state.zoneSchedules[z][slotIdx]) return;
+  const currentDays = state.zoneSchedules[z][slotIdx].days ?? 127;
+  const isDayActive = (currentDays & (1 << dayIdx)) !== 0;
+  const newDays = isDayActive ? (currentDays & ~(1 << dayIdx)) : (currentDays | (1 << dayIdx));
+  state.zoneSchedules[z][slotIdx].days = newDays;
 
-  const currentActive = btn.dataset.active === '1';
-  const newActive = !currentActive;
-  btn.dataset.active = newActive ? '1' : '0';
-
-  if (newActive) {
-    btn.className = 'day-chip active';
-    state.zoneSchedules[z][slotIndex].days |= (1 << dayIndex);
-  } else {
-    btn.className = 'day-chip inactive';
-    state.zoneSchedules[z][slotIndex].days &= ~(1 << dayIndex);
+  const btn = document.getElementById(`dayBtn_${z}_${slotIdx}_${dayIdx}`);
+  if (btn) {
+    if (!isDayActive) {
+      btn.className = 'day-chip active';
+    } else {
+      btn.className = 'day-chip inactive';
+    }
   }
+  saveZoneScheduleAndConfig(z, false);
 }
 
-// Save Config Handler (Sync with Firebase + Optimistic UI)
-document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
-  const z = state.selectedZone;
+// Auto-save moisture thresholds
+function updateZoneMoistureThresholds(z) {
+  const startEl = document.getElementById(`zoneMoistStart_${z}`);
+  const stopEl = document.getElementById(`zoneMoistStop_${z}`);
+  const sVal = startEl ? parseInt(startEl.value, 10) || 35 : 35;
+  const eVal = stopEl ? parseInt(stopEl.value, 10) || 55 : 55;
+  if (!state.configData) state.configData = { zones: [] };
+  if (!state.configData.zones) state.configData.zones = [];
+  if (!state.configData.zones[z]) state.configData.zones[z] = {};
+  state.configData.zones[z].moistureStart = sVal;
+  state.configData.zones[z].moistureStop = eVal;
+  saveZoneScheduleAndConfig(z, false);
+}
+
+// Save specific zone schedule and moisture configuration to Firebase
+function saveZoneScheduleAndConfig(z, showToast = true) {
   const mode = state.zoneModes[z] ?? 1;
   const enabled = (mode !== 0);
-  const moistureStart = parseInt(document.getElementById('cfgMoistStart').value) || 35;
-  const moistureStop = parseInt(document.getElementById('cfgMoistStop').value) || 55;
-
+  const moistStart = state.configData?.zones?.[z]?.moistureStart ?? 35;
+  const moistStop = state.configData?.zones?.[z]?.moistureStop ?? 55;
   const activeList = state.zoneSchedules[z] || [];
   const schedulesToSave = [];
 
   for (let s = 0; s < 4; s++) {
     if (s < activeList.length) {
       const sch = activeList[s];
-      const sEnabled = document.getElementById(`schEnabled_${s}`)?.checked ?? sch.enabled;
-      
-      let h = sch.hour;
-      let m = sch.minute;
-      const hEl = document.getElementById(`schHour_${s}`);
-      const mEl = document.getElementById(`schMin_${s}`);
-      if (hEl && mEl) {
-        h = parseInt(hEl.value, 10);
-        m = parseInt(mEl.value, 10);
-      } else {
-        const timeVal = document.getElementById(`schTime_${s}`)?.value;
-        if (timeVal) {
-          const parts = timeVal.split(':').map(Number);
-          h = parts[0];
-          m = parts[1];
-        }
-      }
-
-      const duration = parseInt(document.getElementById(`schDur_${s}`)?.value) || sch.duration || 10;
-
-      let daysBit = 0;
-      for (let d = 0; d < 7; d++) {
-        const dayBtn = document.getElementById(`dayBtn_${s}_${d}`);
-        if (dayBtn && dayBtn.dataset.active === '1') {
-          daysBit |= (1 << d);
-        }
-      }
-
       schedulesToSave.push({
-        enabled: sEnabled,
-        hour: h,
-        minute: m,
-        duration: duration,
-        days: daysBit
+        enabled: sch.enabled ?? true,
+        hour: sch.hour ?? 6,
+        minute: sch.minute ?? 0,
+        duration: sch.duration ?? 10,
+        days: sch.days ?? 127
       });
     } else {
-      // Empty slot padded for ESP32 firmware fixed 4-slot array
       schedulesToSave.push({
         enabled: false,
         hour: 0,
@@ -1668,45 +1506,111 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
   const zoneConfig = {
     enabled: enabled,
     mode: mode,
-    moistureStart: moistureStart,
-    moistureStop: moistureStop,
+    moistureStart: moistStart,
+    moistureStop: moistStop,
     schedules: schedulesToSave
   };
 
-  // Update memory state
-  state.zoneModes[z] = mode;
   if (!state.configData) state.configData = { zones: [] };
   if (!state.configData.zones) state.configData.zones = [];
   state.configData.zones[z] = zoneConfig;
 
-  // Immediately reflect across all views
-  renderDashboardZoneCards(state.lastData?.zones || []);
-  renderZoneControls(state.lastData);
-
-  // Write to Firebase (Write both nested object and flat keys for ESP32)
   const tsSec = Math.floor(Date.now() / 1000);
   const updates = {};
   updates[`devices/esp32/config/zones/${z}`] = zoneConfig;
   updates[`devices/esp32/config/z${z}_enabled`] = enabled;
   updates[`devices/esp32/config/z${z}_mode`] = mode;
-  updates[`devices/esp32/config/z${z}_moistStart`] = moistureStart;
-  updates[`devices/esp32/config/z${z}_moistStop`] = moistureStop;
+  updates[`devices/esp32/config/z${z}_moistStart`] = moistStart;
+  updates[`devices/esp32/config/z${z}_moistStop`] = moistStop;
   for (let s = 0; s < 4; s++) {
-    const sc = schedulesToSave[s] || { enabled: false, hour: 0, minute: 0, duration: 0, days: 0 };
-    updates[`devices/esp32/config/z${z}_s${s}_en`] = sc.enabled ?? false;
-    updates[`devices/esp32/config/z${z}_s${s}_h`] = sc.hour ?? 0;
-    updates[`devices/esp32/config/z${z}_s${s}_m`] = sc.minute ?? 0;
-    updates[`devices/esp32/config/z${z}_s${s}_dur`] = sc.duration ?? 0;
-    updates[`devices/esp32/config/z${z}_s${s}_days`] = sc.days ?? 0;
+    const sc = schedulesToSave[s];
+    updates[`devices/esp32/config/z${z}_s${s}_en`] = sc.enabled;
+    updates[`devices/esp32/config/z${z}_s${s}_h`] = sc.hour;
+    updates[`devices/esp32/config/z${z}_s${s}_m`] = sc.minute;
+    updates[`devices/esp32/config/z${z}_s${s}_dur`] = sc.duration;
+    updates[`devices/esp32/config/z${z}_s${s}_days`] = sc.days;
   }
+  updates[`devices/esp32/config/configVersion`] = tsSec;
+
+  db.ref().update(updates).catch((err) => {
+    handleFirebaseError(err, `saveZoneScheduleAndConfig(${z})`);
+  });
+
+  if (showToast) {
+    Swal.fire({
+      toast: true,
+      position: 'top',
+      icon: 'success',
+      title: `บันทึกการตั้งค่า ${ZONE_SHORT_NAMES[z]} สำเร็จ 🌿`,
+      showConfirmButton: false,
+      timer: 1800
+    });
+  }
+}
+
+// Backwards compatibility alias
+function renderScheduleSettings() {
+  renderZoneControls(state.lastData);
+}
+
+// Global Save All Config Button
+document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
+  const tsSec = Math.floor(Date.now() / 1000);
+  const updates = {};
   const flowProtection = document.getElementById('cfgFlowProtection')?.checked ?? false;
   updates[`devices/esp32/config/flowProtection`] = flowProtection;
   if (!state.configData) state.configData = {};
   state.configData.flowProtection = flowProtection;
 
+  for (let z = 0; z < 4; z++) {
+    const mode = state.zoneModes[z] ?? 1;
+    const enabled = (mode !== 0);
+    const moistStart = state.configData?.zones?.[z]?.moistureStart ?? 35;
+    const moistStop = state.configData?.zones?.[z]?.moistureStop ?? 55;
+    const activeList = state.zoneSchedules[z] || [];
+    const schedulesToSave = [];
+
+    for (let s = 0; s < 4; s++) {
+      if (s < activeList.length) {
+        const sch = activeList[s];
+        schedulesToSave.push({
+          enabled: sch.enabled ?? true,
+          hour: sch.hour ?? 6,
+          minute: sch.minute ?? 0,
+          duration: sch.duration ?? 10,
+          days: sch.days ?? 127
+        });
+      } else {
+        schedulesToSave.push({ enabled: false, hour: 0, minute: 0, duration: 0, days: 0 });
+      }
+    }
+
+    const zoneConfig = {
+      enabled,
+      mode,
+      moistureStart,
+      moistureStop,
+      schedules: schedulesToSave
+    };
+    if (!state.configData.zones) state.configData.zones = [];
+    state.configData.zones[z] = zoneConfig;
+
+    updates[`devices/esp32/config/zones/${z}`] = zoneConfig;
+    updates[`devices/esp32/config/z${z}_enabled`] = enabled;
+    updates[`devices/esp32/config/z${z}_mode`] = mode;
+    updates[`devices/esp32/config/z${z}_moistStart`] = moistStart;
+    updates[`devices/esp32/config/z${z}_moistStop`] = moistStop;
+    for (let s = 0; s < 4; s++) {
+      const sc = schedulesToSave[s];
+      updates[`devices/esp32/config/z${z}_s${s}_en`] = sc.enabled;
+      updates[`devices/esp32/config/z${z}_s${s}_h`] = sc.hour;
+      updates[`devices/esp32/config/z${z}_s${s}_m`] = sc.minute;
+      updates[`devices/esp32/config/z${z}_s${s}_dur`] = sc.duration;
+      updates[`devices/esp32/config/z${z}_s${s}_days`] = sc.days;
+    }
+  }
   updates[`devices/esp32/config/configVersion`] = tsSec;
 
-  // Button instant visual feedback (0ms latency!)
   const btn = document.getElementById('btnSaveConfig');
   const origHtml = btn ? btn.innerHTML : '';
   if (btn) {
@@ -1715,15 +1619,14 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
     btn.classList.remove('bg-forest-700');
   }
 
-  // Toast feedback instantly without waiting on network
   Swal.fire({
     toast: true,
     position: 'top',
     icon: 'success',
-    title: `บันทึกการตั้งค่า ${ZONE_SHORT_NAMES[z]} สำเร็จ 🌿`,
-    text: 'การตั้งค่ามีผลทันที และส่งไปยังบอร์ดแล้ว',
+    title: 'บันทึกการตั้งค่าทั้ง 4 โซนสำเร็จ 🌿',
+    text: 'ข้อมูลถูกส่งไปยัง ESP32 เรียบร้อยแล้ว',
     showConfirmButton: false,
-    timer: 1800
+    timer: 2000
   });
 
   db.ref().update(updates).then(() => {
@@ -1740,9 +1643,34 @@ document.getElementById('btnSaveConfig')?.addEventListener('click', () => {
       btn.classList.remove('bg-emerald-600');
       btn.classList.add('bg-forest-700');
     }
-    handleFirebaseError(err, `saveZoneConfig(${z})`);
+    handleFirebaseError(err, 'btnSaveConfigAll');
   });
 });
+
+// Flow protection switch listener
+document.getElementById('cfgFlowProtection')?.addEventListener('change', (e) => {
+  const val = e.target.checked;
+  if (!state.configData) state.configData = {};
+  state.configData.flowProtection = val;
+  db.ref('devices/esp32/config').update({
+    flowProtection: val,
+    configVersion: Math.floor(Date.now() / 1000)
+  }).catch(err => handleFirebaseError(err, 'cfgFlowProtection'));
+});
+
+// Bind all interactive handlers to window for inline HTML onclick/onchange
+window.toggleZoneSettings = toggleZoneSettings;
+window.openZoneSettings = openZoneSettings;
+window.addZoneScheduleSlot = addZoneScheduleSlot;
+window.removeZoneScheduleSlot = removeZoneScheduleSlot;
+window.stepZoneSlotDuration = stepZoneSlotDuration;
+window.setZoneSlotDuration = setZoneSlotDuration;
+window.setZoneSlotTimePreset = setZoneSlotTimePreset;
+window.updateZoneSlotFromInputs = updateZoneSlotFromInputs;
+window.toggleZoneSlotDay = toggleZoneSlotDay;
+window.updateZoneMoistureThresholds = updateZoneMoistureThresholds;
+window.saveZoneScheduleAndConfig = saveZoneScheduleAndConfig;
+window.renderScheduleSettings = renderScheduleSettings;
 
 // ================================================================
 //  HISTORICAL CHARTS (Chart.js Integration)
